@@ -2,11 +2,370 @@
 """智能狼人杀Agent - 简化但高效的实现"""
 import os
 import re
-from typing import Optional
+from typing import Optional, Dict, Any
 from agentscope.agent import ReActAgent
 from agentscope.formatter import DashScopeMultiAgentFormatter
 from agentscope.model import DashScopeChatModel
 from agentscope.message import Msg
+
+
+#############################################
+# Role Adaptation Module (Phase 1 Implementation)
+# Usage: PlayerAgent will automatically select a strategy based on
+#        `current_role` and inject prompt fragments + decision shaping.
+#############################################
+
+class _RoleStrategy:
+    # 中文说明：
+    # 该基类定义“身份策略”统一接口，用于：
+    # 1. prompt()：返回该身份的策略描述片段（供系统提示词动态拼接）。
+    # 2. adjust_night_decision()：对夜晚阶段初步决策进行角色定制微调（如增加特别理由、过滤目标等）。
+    # 3. adjust_day_decision()：对白天发言与投票建议进行再加工（如补充风险说明、温和化表达）。
+    # 设计思想：保持极简、可扩展。后续需要增加“欺骗检测”“风险权重”“动态学习”等功能时，
+    # 只需在子类中添加新字段或覆盖方法，不破坏现有 PlayerAgent 使用方式。
+    # 注意：按照项目规范，正式 docstring 仍保持英文；中文仅作为辅助阅读注释。
+    """Base class for role-specific strategy logic.
+
+    Each concrete role strategy should implement prompt fragments and
+    optional hooks for decision shaping in night/day phases.
+
+    The design keeps it lightweight – later phases can extend with
+    richer reasoning, deception modeling, or dynamic weighting.
+
+    Args:
+        role (`str`):
+            Role name handled by the strategy.
+    """
+
+    def __init__(self, role: str):
+        self.role = role
+
+    def prompt(self) -> str:
+        """Return role-specific prompt fragment.
+
+        Returns:
+            `str`:
+                Prompt fragment describing strategy guidance for the role.
+        """
+        return ""
+
+    def adjust_night_decision(self, decision: Dict[str, Any]) -> Dict[str, Any]:
+        """Hook to adjust night decision dictionary.
+
+        Args:
+            decision (`dict`):
+                Raw decision generated before role-specific shaping.
+
+        Returns:
+            `dict`:
+                Possibly modified decision.
+        """
+        return decision
+
+    def adjust_day_decision(self, decision: Dict[str, Any]) -> Dict[str, Any]:
+        """Hook to adjust day decision dictionary.
+
+        Args:
+            decision (`dict`):
+                Raw daytime decision (speech & vote suggestions).
+
+        Returns:
+            `dict`:
+                Possibly modified decision.
+        """
+        return decision
+
+
+class _WerewolfStrategy(_RoleStrategy):
+    def prompt(self) -> str:  # noqa: D401 - short override
+        return (
+            "# 狼人策略 🐺\n\n"
+            "## 角色定位\n"
+            "你是黑暗阵营的核心输出与信息扰动者。你的主要目标是：\n"
+            "1. 在白天以可信逻辑伪装成好人（村民或功能角色）\n"
+            "2. 夜晚高效协作选择击杀目标，优先破坏好人信息结构\n"
+            "3. 控制节奏避免早期集中暴露，拖入中后期形成人数优势\n\n"
+            "## 目标优先级（夜晚击杀顺序参考）\n"
+            "1. 已显露或高度疑似的预言家 🔮\n"
+            "2. 行为、语言像女巫的玩家（救人/毒人节奏影响大）🧙‍♀️\n"
+            "3. 发言缜密、带动推理的强势玩家（可能是猎人或关键好人）🏹\n"
+            "4. 中期开始清理中等活跃度的普通村民以制造信息缺口\n\n"
+            "## 夜晚策略细化\n"
+            "- 第一夜：信息不足，建议避开明显‘边缘’玩家，挑选活跃或可能是功能角色者。\n"
+            "- 中后期：结合白天发言与投票行为评估功能角色真实概率，定向清除。\n"
+            "- 协作方式：提出2~3个候选 → 快速理由归纳 → 收敛到风险最低且收益最高目标。\n"
+            "- 避免连续两夜击杀同类型（如连续抓极跳的人），防止好人建立你们选择模型。\n\n"
+            "## 白天发言结构模板\n"
+            "1. 开局复述客观信息（显示你在整理局势）\n"
+            "2. 选取 1~2 条别人忽略的细节做‘中度分析’\n"
+            "3. 给出一个温和的可疑名单（含 2~3 人，不要唯一指向）\n"
+            "4. 明确自己的投票倾向但保持可回旋余地\n"
+            "5. 避免：空洞防御 / 过度追击单人 / 与同伴互相强互动\n\n"
+            "## 跳身份与伪装\n"
+            "- 预言家伪装：仅在真预言家已高度被怀疑或已死亡且你能给出连续验人逻辑时使用。\n"
+            "- 女巫伪装：少见，不推荐主动跳；可在被点杀时用来转移视线。\n"
+            "- 村民伪装：默认安全选项，适度逻辑+跟进即可。\n"
+            "- 伪装一致性：保持你前几轮的语言风格、节奏密度、关注点类型稳定。\n\n"
+            "## 欺骗与反侦测技巧\n"
+            "- 模仿好人推理链：先列事实→标记不确定→给出‘试探性假设’\n"
+            "- 控制攻击阈值：不要第一时间攻击真正逻辑清晰者，可延后至其第二次逻辑出现微瑕疵时再切入。\n"
+            "- 制造信息噪声：提出互斥的两种可能场景，鼓励好人内部分歧。\n"
+            "- 避免：刻意为狼同伴洗白（过度防守会暴露阵营网络）。\n\n"
+            "## 投票与节奏控制\n"
+            "- 票型策略：早期分散，避免狼队集体押一人；中期开始适度集中形成‘多数引导’假象。\n"
+            "- 临界局势（人数接近终局）：通过‘犹豫—跟进’节奏制造你是摇摆好人的印象。\n"
+            "- 候选对冲：当同伴被强推时，构造另一个合理的高危目标分散票。\n\n"
+            "## 风险控制\n"
+            "- 高风险行为：连续强跳身份 / 与已死亡的好人逻辑反复冲突。\n"
+            "- 监控指标：是否出现多人同时标记你与另一名玩家为‘阵营组合’。\n"
+            "- 降风险手段：中途自检发言结构 → 减少主观口吻 → 增加条件语。\n\n"
+            "## 应急处理\n"
+            "- 自身被集火：及时承认部分逻辑疏漏 → 转为结构化补充 → 争取“再看一轮”空间。\n"
+            "- 同伴暴露：迅速切割（减少互动引用），用“其行为与我早期判断不符”建立距离。\n"
+            "- 终局少狼：争取形成‘错误团队协作’假象，让好人怀疑彼此误导。\n\n"
+            "## 决策流程（夜晚简版）\n"
+            "1. 收集白天指向与功能角色线索\n"
+            "2. 评估剩余功能角色存活概率\n"
+            "3. 列出 2~3 名击杀候选及收益/风险\n"
+            "4. 快速协商锁定目标\n"
+            "5. 记录当晚选择逻辑以备次日发言伪装引用\n"
+        )
+
+    def adjust_day_decision(self, decision: Dict[str, Any]) -> Dict[str, Any]:
+        # Slightly temper aggressive vote suggestions by adding reasoning.
+        if isinstance(decision, dict) and 'vote' in decision and decision['vote']:
+            decision['vote_reasoning'] = (
+                "Maintain moderate pressure; avoid leading too strongly to reduce suspicion."
+            )
+        return decision
+
+
+class _VillagerStrategy(_RoleStrategy):
+    def prompt(self) -> str:  # noqa: D401 - short override
+        return (
+            "# 村民策略 👨‍🌾\n\n"
+            "## 角色定位\n"
+            "你是阵营信息结构的基石。虽无夜晚技能，但通过‘发言质量 + 投票精准度’决定好人阵营推进速度。\n\n"
+            "## 核心目标\n"
+            "1. 快速区分“主动构造逻辑者”与“附和型发言者”\n"
+            "2. 建立自己稳定可信的分析风格\n"
+            "3. 协助锁定功能角色并保护其信息产出\n\n"
+            "## 信息采集重点\n"
+            "- 发言结构：是否有事实→推断→结论三段式？\n"
+            "- 时间节奏：关键轮次（首轮/查杀公布后）谁刻意降活跃度？\n"
+            "- 投票行为：谁在避免站队、谁在翻票、谁在关键时刻补票。\n"
+            "- 语言迹象：反复使用模糊评价 vs. 提供可验证链条。\n\n"
+            "## 白天发言模板\n"
+            "1. 开局：复盘夜晚结果 + 标记信息缺口（例如：未知女巫是否出药）\n"
+            "2. 中段：挑选 1~2 个异常点做结构化拆解（发言矛盾/投票反常）\n"
+            "3. 后段：给出候选投票对象（A>优先，B>次选），并简述放弃其他人的理由\n"
+            "4. 保留：若功能角色未跳，不轻易自曝身份猜测\n\n"
+            "## 投票策略\n"
+            "- 前期：跟随可信主导逻辑，但保留独立判断说明\n"
+            "- 中期：若出现多个跳身份，优先验证逻辑稳定性而非情绪表达\n"
+            "- 后期：根据剩余人数计算狼最低存活数，进行逆向排除\n"
+            "- 避免：纯情绪票 / 无分析的跟票\n\n"
+            "## 风险控制\n"
+            "- 低质量急躁连发→易被狼利用引导\n"
+            "- 过度防守单人→被视作‘绑定’\n"
+            "- 防范狼方伪逻辑：检查其引用的前置事实是否真实出现过\n\n"
+            "## 常见误区\n"
+            "- 迷信首轮小细节（狼可故意投放噪声）\n"
+            "- 将‘沉默’等同于‘狼’（功能角色亦可能保守）\n"
+            "- 逻辑链未显式标注假设条件导致后期被反驳\n\n"
+            "## 应急处理\n"
+            "- 被误认为狼：冷静列出你所有已公开的推理要点与其正向作用\n"
+            "- 盘错局势：及时承认假设失效并调整（展示你不是死扛）\n\n"
+            "## 简易决策流程\n"
+            "1. 汇总夜晚信息 → 是否有功能行动迹象\n"
+            "2. 标记与上轮发言风格变化大的玩家\n"
+            "3. 投票前再审查主推对象逻辑闭环性\n"
+            "4. 公布票意并给出可验证理由\n"
+        )
+
+
+class _SeerStrategy(_RoleStrategy):
+    def prompt(self) -> str:  # noqa: D401 - short override
+        return (
+            "# 预言家策略 🔮\n\n"
+            "## 角色定位\n"
+            "信息锚点制造者。你的验人结果决定好人阵营是否能形成稳定叙事与精准打击。存活价值远大于单次正确指认。\n\n"
+            "## 核心节奏\n"
+            "- 前期（第1~2夜）：隐匿 + 验活跃或可能影响舆论者\n"
+            "- 中期：若已有 2 次高价值验杀或局势混乱 → 公开身份建立验人日志\n"
+            "- 后期：确保验人链完整转移到可信替代发言者（防被毒或击杀后断档）\n\n"
+            "## 验人优先级\n"
+            "1. 语言组织度极高且企图引导结构者（可能是狼带节奏）\n"
+            "2. 对局势不断‘模糊处理’、避免明确立场者\n"
+            "3. 跳身份者（检验真假）\n"
+            "4. 中后期若剩余人数少：查验潜在终局关键票持有者\n\n"
+            "## 隐匿技巧\n"
+            "- 早期发言控制在“补充+轻度推理”层面，避免连续提出高度结构化链条。\n"
+            "- 刻意保留对部分玩家的评价延后一轮释放，避免被狼推测你查验方向。\n"
+            "- 若被误指为功能角色可暂不强烈否认，收集更多指向再择机翻转。\n\n"
+            "## 公开身份时机判断\n"
+            "满足以下至少两条即可考虑跳：\n"
+            "- 已验出狼人或强伪装对象\n"
+            "- 狼方明显开始构造你是‘伪预言家’的节奏\n"
+            "- 你的存活被多方票或毒的风险上升\n"
+            "- 局势高度混乱需要锚定事实\n\n"
+            "## 验人日志格式（公开后建议）\n"
+            "示例：\n"
+            "- N1：验 Player3 → 好人（理由：高活跃+试探性逻辑）\n"
+            "- N2：验 Player7 → 狼（理由：刻意回避投票讨论）\n"
+            "- N3：计划验 Player5（当前摇摆立场，可能关键票）\n\n"
+            "## 风险与防护\n"
+            "- 最大威胁：狼人定向击杀 + 女巫误毒\n"
+            "- 防范：提前建立可信‘支持者’（村民中逻辑清晰者）作为信息缓冲。\n"
+            "- 若跳身份后被质疑：使用“可验证结构”优先（列事实→顺序→时间线）。\n\n"
+            "## 常见错误\n"
+            "- 过早公开且无高价值结果\n"
+            "- 未保持验人逻辑的一致标准（会被狼攻击为伪造）\n"
+            "- 忽视自身被击杀后信息断层问题\n\n"
+            "## 应急处理\n"
+            "- 若被标记伪预言家：快速比较你与对跳者的‘验人选择合理度’与‘时间线一致性’。\n"
+            "- 若晚间可能被集火：预先在当日尾声投递“保底下一夜验人计划”。\n\n"
+            "## 决策流程\n"
+            "1. 归纳上一白天发言异常点\n"
+            "2. 列出 2 名潜在高价值查验对象\n"
+            "3. 选择能最大化后续昼夜信息收益者\n"
+            "4. 更新内部验人链并评估是否进入跳身份窗口\n"
+        )
+
+    def adjust_night_decision(self, decision: Dict[str, Any]) -> Dict[str, Any]:
+        # Ensure a reasoning field clarity.
+        if 'reasoning' in decision:
+            decision['reasoning'] += " | Focus on information-rich targets."
+        return decision
+
+
+class _WitchStrategy(_RoleStrategy):
+    def prompt(self) -> str:  # noqa: D401 - short override
+        return (
+            "# 女巫策略 🧙‍♀️\n\n"
+            "## 角色定位\n"
+            "信息与生存节奏调控者。你的一瓶救与一瓶毒是改变胜负曲线的强力杠杆。\n\n"
+            "## 解药使用原则\n"
+            "- N1 若死亡者发言结构成熟或疑似预言家可考虑救，但避免无依据滥用。\n"
+            "- 若已确认预言家被击杀且人数尚多：优先保证其继续产出。\n"
+            "- 中后期慎救‘被普遍怀疑者’，防止被狼利用制造错觉。\n\n"
+            "## 毒药使用原则\n"
+            "满足 ≥2 条再考虑：\n"
+            "1. 多轮逻辑风格自洽但结果指向反常（伪预言家嫌疑）\n"
+            "2. 频繁引导错误票或反复拆真逻辑链\n"
+            "3. 夜晚击杀与其白天建议存在正相关\n"
+            "4. 投票行为与其公开立场显著不一致\n\n"
+            "## 隐藏策略\n"
+            "- 早期避免对“是否救人”话题过度深入分析以免暴露信息权限。\n"
+            "- 发言保持‘延迟确认’模式：先说不确定，再在后期基于更多线索给出倾向。\n"
+            "- 若自身即将被强推，可部分公开用药情况增强可信度。\n\n"
+            "## 信息再利用\n"
+            "- 记录每次死亡与当日投票/发言交叉，帮助锁定狼队打击模型。\n"
+            "- 若成功救人：评估被救者后续发言是否显著提升（判断其真实功能价值）。\n\n"
+            "## 风险控制\n"
+            "- 过早两药全出 → 后期失去调节能力。\n"
+            "- 毒错好人 → 导致阵营信任结构崩塌。\n"
+            "- 被狼方诱导用药：警惕‘一致性过强’的群体推毒。\n\n"
+            "## 常见误区\n"
+            "- 仅依据‘被多数怀疑’就下毒\n"
+            "- 忽视投票反差信号\n"
+            "- 解药与毒药同夜使用导致身份完全暴露\n\n"
+            "## 应急处理\n"
+            "- 被质疑用药不合理：给出当时信息集合 + 决策条件 + 备选方案否定理由。\n"
+            "- 药已用尽：转为辅助信息分析角色，明确声明‘无剩余药’防狼试探。\n\n"
+            "## 决策流程（夜间）\n"
+            "1. 识别被杀者信息价值\n"
+            "2. 判断救后是否能显著提高胜率曲线\n"
+            "3. 评估是否存在高置信度毒对象（≥2 证据）\n"
+            "4. 若均不满足 → 保留药\n"
+        )
+
+
+class _HunterStrategy(_RoleStrategy):
+    def prompt(self) -> str:  # noqa: D401 - short override
+        return (
+            "# 猎人策略 🏹\n\n"
+            "## 角色定位\n"
+            "终局威慑与反制工具。你的开枪目标可直接影响人数与信息再分布。\n\n"
+            "## 存活价值\n"
+            "- 存活期间：提供中度独立分析，避免极跳防止被女巫毒。\n"
+            "- 即将被票/毒风险升高：可半公开身份争取正确投票或防误毒。\n\n"
+            "## 枪的使用原则\n"
+            "- 必须≥70% 置信度才开枪（来源：投票行为 + 发言矛盾 + 验人链冲突）。\n"
+            "- 若不确定且剩余人数临近终局：宁可不开枪保留阵营结构。\n"
+            "- 优先带走：高引导疑似狼 / 伪跳功能角色者。\n\n"
+            "## 身份隐藏技巧\n"
+            "- 避免刻意自称‘如果我是猎人…’类型句式。\n"
+            "- 投票与普通村民风格一致，勿频繁制造极端反差。\n"
+            "- 中期可偶尔精准辅助推理，建立可信度为终局枪铺路。\n\n"
+            "## 开枪前判断\n"
+            "1. 该玩家是否多次引导错误节奏？\n"
+            "2. 是否与已确认好人持续对立？\n"
+            "3. 是否其发言时间线中出现自我否定未解释？\n"
+            "4. 是否存在更高风险但更高收益的替代对象？\n\n"
+            "## 风险控制\n"
+            "- 误枪好人 → 阵营进入被动；避免仓促情绪决策。\n"
+            "- 被女巫毒死不能开枪：因此早期不要暴露过多‘终局思考’。\n\n"
+            "## 应急处理\n"
+            "- 被强推：冷静表态身份并给出现阶段拟定枪目标，争取改票。\n"
+            "- 低置信度局：明确阐述不开枪理由，防止被指责‘逃避责任’。\n\n"
+            "## 简易流程\n"
+            "1. 收集狼嫌疑 Top2\n"
+            "2. 标记其与好人互动模式\n"
+            "3. 评估枪收益 vs. 误伤惩罚\n"
+            "4. 决定是否公开枪意向或保留\n"
+        )
+
+
+class RoleAdapter:
+    """Role adaptation manager translating a role into dynamic strategy object.
+
+    Provides prompt fragments and decision shaping via registered strategy
+    instances. Keeps extension simple: add new role by defining a new
+    `_RoleStrategy` subclass and registering it in `_strategies`.
+
+    Methods are intentionally narrow to preserve existing PlayerAgent flow
+    without invasive refactoring.
+    """
+
+    def __init__(self) -> None:
+        self._strategies: Dict[str, _RoleStrategy] = {
+            'werewolf': _WerewolfStrategy('werewolf'),
+            'villager': _VillagerStrategy('villager'),
+            'seer': _SeerStrategy('seer'),
+            'witch': _WitchStrategy('witch'),
+            'hunter': _HunterStrategy('hunter'),
+        }
+
+    def get_strategy(self, role: Optional[str]) -> Optional[_RoleStrategy]:
+        """Return strategy instance for role (or None if unsupported)."""
+        if not role:
+            return None
+        return self._strategies.get(role)
+
+    def get_prompt_fragment(self, role: Optional[str]) -> str:
+        """Return role-specific prompt fragment or empty string.
+
+        Args:
+            role (`str | None`):
+                Current role name.
+
+        Returns:
+            `str`:
+                Fragment for inclusion in system prompt.
+        """
+        strategy = self.get_strategy(role)
+        return strategy.prompt() if strategy else ""
+
+    def shape_night_decision(self, role: Optional[str], decision: Dict[str, Any]) -> Dict[str, Any]:
+        """Apply role-specific adjustments to a night decision."""
+        strategy = self.get_strategy(role)
+        return strategy.adjust_night_decision(decision) if strategy else decision
+
+    def shape_day_decision(self, role: Optional[str], decision: Dict[str, Any]) -> Dict[str, Any]:
+        """Apply role-specific adjustments to a day decision."""
+        strategy = self.get_strategy(role)
+        return strategy.adjust_day_decision(decision) if strategy else decision
 
 
 class DecisionMaker:
@@ -570,6 +929,8 @@ class PlayerAgent(ReActAgent):
         self.decision_maker = DecisionMaker(name)
         self.risk_assessment = RiskAssessment()
         self.team_coordination = TeamCoordination(name)
+        # 新增：角色适应模块（RoleAdapter）
+        self.role_adapter = RoleAdapter()
         
         # 调用父类初始化
         super().__init__(
@@ -619,10 +980,14 @@ class PlayerAgent(ReActAgent):
         if hasattr(self, '_current_phase') and self._current_phase:
             if self._current_phase == 'night':
                 decision = self.decision_maker.night_phase_decision(self.current_role, game_state)
+                # 角色策略微调夜晚决策
+                decision = self.role_adapter.shape_night_decision(self.current_role, decision)
                 insights += f"## 夜晚决策建议\n"
                 insights += f"- {decision.get('reasoning', '根据当前情况谨慎选择')}\n\n"
             elif self._current_phase == 'day':
                 decision = self.decision_maker.day_phase_decision(game_state)
+                # 角色策略微调白天决策
+                decision = self.role_adapter.shape_day_decision(self.current_role, decision)
                 insights += f"## 白天策略建议\n"
                 insights += f"- 发言策略: {decision.get('speech', '分析局势')}\n\n"
         
@@ -712,142 +1077,12 @@ class PlayerAgent(ReActAgent):
         """根据当前角色返回特定的策略指导"""
         if not self.current_role:
             return ""
-        
-        role_prompts = {
-            'werewolf': """
-# 狼人策略 🐺
-你现在是狼人！
-
-## 目标
-- 和狼人队友配合，消灭好人
-- 隐藏身份，避免被发现
-- 找出并消灭预言家（最大威胁）
-
-## 夜晚行动
-- 第一晚可以随机选择目标（因为没有信息）
-- 后续优先消灭：预言家 > 女巫 > 猎人 > 村民
-- 和队友讨论，达成一致
-
-## 白天策略
-- 可以伪装成村民或预言家
-- 如果伪装成预言家，要确保逻辑自洽
-- 适当质疑真预言家，混淆视听
-- 注意：不要和队友互相指认！
-
-## 关键提示
-- 预言家是最大威胁，尽快找出并消灭
-- 避免狼人集体给同一人投票（太明显）
-- 如果被怀疑，冷静应对，不要慌张
-""",
-            'seer': """
-# 预言家策略 🔮
-你现在是预言家！
-
-## 目标
-- 使用查验能力找出狼人
-- 引导好人投票淘汰狼人
-- 保护自己不被狼人发现
-
-## 夜晚行动
-- 优先查验发言可疑的人
-- 或查验活跃的玩家（可能是狼人在带节奏）
-- 记住每次查验的结果
-
-## 白天策略
-- 前期不要过早暴露身份（会被狼人针对）
-- 如果查到狼人，可以适当引导投票，但要隐晦
-- 如果局势紧张，可以公开身份并报验人结果
-- 公开后要给出清晰的验人历史
-
-## 关键提示
-- 你是好人方最关键的角色
-- 存活比查验更重要（死了就没用了）
-- 注意有人可能伪装预言家（跳预言家）
-""",
-            'witch': """
-# 女巫策略 🧙‍♀️
-你现在是女巫！
-
-## 能力
-- 解药：救活一个被杀的人（只能用一次）
-- 毒药：毒死一个人（只能用一次）
-
-## 药水使用建议
-
-### 解药
-- 第一晚如果有人死，可以考虑救（可能是预言家）
-- 后期如果知道是关键好人被杀，优先救
-- 不要盲目使用，留给关键时刻
-
-### 毒药
-- 确定某人是狼人后再用
-- 可以毒掉跳假预言家的人
-- 关键时刻使用，帮助好人扳平局势
-
-## 白天策略
-- 前期隐藏身份
-- 如果局势需要，可以公开身份说明用药情况
-- 利用信息优势（你知道谁被杀）进行推理
-
-## 关键提示
-- 两瓶药都很宝贵，不要浪费
-- 第一晚最好不要同时用药（会暴露身份）
-- 你掌握关键信息，要善用
-""",
-            'hunter': """
-# 猎人策略 🏹
-你现在是猎人！
-
-## 能力
-- 死亡时可以开枪带走一人
-- 也可以选择不开枪
-
-## 策略
-- 白天不要过早暴露身份（会被女巫毒）
-- 如果要被投票淘汰，可以提前说明身份
-- 死亡时，优先带走确定的狼人
-- 如果不确定，宁可不开枪
-
-## 白天行动
-- 可以适当激进一些（因为有开枪保底）
-- 但不要太跳，避免被女巫毒
-- 帮助分析局势，引导投票
-
-## 关键提示
-- 你的枪是威慑，有时不开枪也是策略
-- 被女巫毒死不能开枪
-- 确定目标再开枪，不要浪费
-""",
-            'villager': """
-# 村民策略 👨‍🌾
-你现在是普通村民！
-
-## 角色定位
-- 虽然没有特殊能力，但人数众多
-- 通过逻辑推理找出狼人
-- 保护特殊好人角色
-
-## 策略
-- 仔细分析每个人的发言
-- 注意投票模式（谁投了谁）
-- 观察谁在带节奏
-- 保护预言家（如果有人跳预言家）
-
-## 发言技巧
-- 不要乱跳身份（会干扰信息）
-- 给出清晰的推理逻辑
-- 适当质疑可疑的人
-- 团结其他村民
-
-## 关键提示
-- 你的投票很重要
-- 不要被狼人带节奏
-- 相信预言家的验人结果
-- 避免内讧
-"""
-        }
-        
-        return role_prompts.get(self.current_role, "")
+        # 优先使用新的角色适应模块
+        fragment = self.role_adapter.get_prompt_fragment(self.current_role)
+        if fragment:
+            return fragment
+        # 回退旧逻辑（保持兼容性）
+        return ""
     
     async def observe(self, msg: Msg | list[Msg] | None) -> None:
         """观察函数 - 接收并处理游戏信息
