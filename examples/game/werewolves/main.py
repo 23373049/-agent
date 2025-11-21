@@ -83,11 +83,11 @@ async def main() -> None:
 
     # Uncomment the following lines if you want to use Agentscope Studio
     # to visualize the game process.
-    import agentscope
-    agentscope.init(
-        studio_url="http://localhost:3000",
-        project="werewolf_game",
-    )
+    # import agentscope
+    # agentscope.init(
+    #     studio_url="http://localhost:3000",
+    #     project="werewolf_game",
+    # )
 
     # Prepare 9 players, you can change their names here
     
@@ -103,13 +103,58 @@ async def main() -> None:
         **{player.name: player for player in players},
     )
 
-    await werewolves_game(players)
-
-    # Save the states to a checkpoint
+    # 🎮 多局游戏循环 - 让AI学习和进化
+    num_games = 5  # 设置游戏局数（可以修改为 5, 20, 50, 100 等）
+    
+    for game_round in range(1, num_games + 1):
+        print(f"\n{'='*70}")
+        print(f"🎮 开始第 {game_round}/{num_games} 局游戏")
+        print(f"{'='*70}\n")
+        
+        # 运行一局游戏
+        await werewolves_game(players)
+        
+        # 每5局保存一次检查点（防止意外中断丢失数据）
+        if game_round % 5 == 0 or game_round == num_games:
+            await session.save_session_state(
+                session_id="players_checkpoint",
+                **{player.name: player for player in players},
+            )
+            print(f"\n💾 已保存第 {game_round} 局的检查点")
+        
+        print(f"\n{'='*70}")
+        print(f"✅ 第 {game_round}/{num_games} 局游戏结束")
+        
+        # 显示当前学习进度
+        sample_player = players[0]
+        if hasattr(sample_player, 'player_memory'):
+            total = sample_player.player_memory.total_games
+            wins = sample_player.player_memory.wins
+            win_rate = wins / total if total > 0 else 0
+            print(f"📊 {sample_player.name} 当前战绩: {wins}/{total} 胜 (胜率: {win_rate:.1%})")
+        print(f"{'='*70}\n")
+        
+        # 短暂停顿，让日志更清晰
+        await asyncio.sleep(1)
+    
+    # 最终保存
     await session.save_session_state(
         session_id="players_checkpoint",
         **{player.name: player for player in players},
     )
+    
+    print(f"\n{'='*70}")
+    print(f"🎉 所有 {num_games} 局游戏已完成！")
+    print(f"{'='*70}")
+    
+    # 显示最终统计
+    print(f"\n📈 最终学习成果统计:\n")
+    for player in players:
+        if hasattr(player, 'player_memory'):
+            mem = player.player_memory
+            win_rate = mem.wins / mem.total_games if mem.total_games > 0 else 0
+            print(f"  {player.name}: {mem.wins}/{mem.total_games} 胜 (胜率: {win_rate:.1%})")
+    print()
 
 
 asyncio.run(main())

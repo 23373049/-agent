@@ -761,9 +761,16 @@ class TeamCoordination:
 
 
 class PlayerMemory:
-    """玩家记忆系统 - 跨局学习的核心"""
+    """玩家记忆系统 - 跨局学习的核心
+    
+    集成了三大学习模块：
+    1. ExperienceMemory - 经验记忆系统
+    2. StrategyOptimizer - 策略优化算法
+    3. OnlineLearning - 在线学习能力
+    """
     
     def __init__(self):
+        # ==================== 基础记忆结构 ====================
         # 当前游戏状态
         self.current_game = {
             'role': None,
@@ -771,7 +778,9 @@ class PlayerMemory:
             'dead_players': [],
             'night_results': [],
             'speeches': [],
-            'votes': []
+            'votes': [],
+            'key_decisions': [],  # 新增：记录关键决策
+            'game_round': 0,      # 新增：当前回合数
         }
         
         # 跨局记忆
@@ -786,11 +795,56 @@ class PlayerMemory:
             'hunter': {'played': 0, 'won': 0}
         }
         
-        # 玩家行为模式（简单版本）
-        self.player_profiles = {}  # {player_name: {'suspicious_count': 0, 'survived_games': 0}}
+        # ==================== 4.1 经验记忆系统 ====================
+        # 游戏历史数据库（完整记录）
+        self.game_history = []  # 存储所有游戏的详细数据
         
-        # 策略经验
-        self.learned_patterns = []  # 成功的策略模式
+        # 对手行为模型
+        self.opponent_models = {}  # {player_name: OpponentProfile}
+        
+        # 情境记忆索引（用于快速检索相似情况）
+        self.situation_index = {
+            'early_game': [],   # 前期情况
+            'mid_game': [],     # 中期情况
+            'late_game': [],    # 后期情况
+        }
+        
+        # ==================== 4.2 策略优化算法 ====================
+        # 策略权重系统
+        self.strategy_weights = {
+            'aggressive': 0.5,        # 激进程度 (0-1)
+            'reveal_early': 0.3,      # 早期暴露身份倾向
+            'trust_threshold': 0.6,   # 信任阈值
+            'risk_tolerance': 0.5,    # 风险容忍度
+            'deception_level': 0.5,   # 欺骗程度（狼人用）
+            'follow_crowd': 0.4,      # 跟随大众倾向
+        }
+        
+        # 成功模式库
+        self.success_patterns = []  # [{'pattern': {...}, 'success_rate': 0.8, 'context': {...}}]
+        
+        # 失败分析
+        self.failure_patterns = []  # [{'pattern': {...}, 'reason': '...', 'context': {...}}]
+        
+        # 策略学习率
+        self.learning_rate = 0.1
+        
+        # ==================== 4.3 在线学习能力 ====================
+        # 实时学习状态
+        self.current_round_insights = {}  # 当前局实时学到的信息
+        
+        # 对手实时跟踪
+        self.opponent_live_tracking = {}  # {player_name: {'actions': [], 'style': '...'}}
+        
+        # 动态策略调整记录
+        self.strategy_adjustments = []  # 记录每次调整及原因
+        
+        # 游戏阶段适应参数
+        self.phase_adaptation = {
+            'early': {'risk': 0.3, 'aggression': 0.4},
+            'mid': {'risk': 0.5, 'aggression': 0.5},
+            'late': {'risk': 0.7, 'aggression': 0.7},
+        }
     
     def update_role(self, role: str):
         """更新当前角色"""
@@ -807,18 +861,25 @@ class PlayerMemory:
             content = " ".join(str(item) for item in content)
         elif not isinstance(content, str):
             content = str(content)
-        
-        # 提取死亡信息
+
+        # 🔴 新增：初始化存活玩家列表
+        if "the players are:" in content.lower():
+            # 提取玩家名单
+            players = re.findall(r'Player\d+', content)
+            self.current_game['alive_players'] = players
+            # print(f"[记忆] 初始化存活玩家: {players}")
+
+        # 🔴 合并：更新存活玩家列表和死亡信息
         if "has been eliminated" in content or "died" in content:
-            # 简单的玩家名提取
-            import re
             player_pattern = r'Player\d+'
             players = re.findall(player_pattern, content)
             for player in players:
-                if player not in self.current_game['dead_players']:
-                    self.current_game['dead_players'].append(player)
+                # 只在玩家第一次死亡时处理和打印
                 if player in self.current_game['alive_players']:
                     self.current_game['alive_players'].remove(player)
+                    if player not in self.current_game['dead_players']:
+                        self.current_game['dead_players'].append(player)
+                        print(f"[记忆] {player} 已死亡，剩余: {self.current_game['alive_players']}")
         
         # 提取投票信息
         if "voting result" in content.lower() or "vote" in content.lower():
@@ -835,8 +896,468 @@ class PlayerMemory:
                 'content': content
             })
     
+    # ==================== 4.1 经验记忆系统方法 ====================
+    
+    def store_game_experience(self, game_data: dict):
+        """存储完整的游戏经验
+        
+        Args:
+            game_data: 游戏数据，包含角色、胜负、关键决策、对手行为等
+        """
+        # 1. 存入游戏历史
+        game_record = {
+            'game_id': self.total_games,
+            'role': game_data.get('role'),
+            'won': game_data.get('won', False),
+            'key_decisions': game_data.get('key_decisions', []),
+            'opponent_behaviors': game_data.get('opponent_behaviors', {}),
+            'game_flow': game_data.get('game_flow', []),
+            'final_alive_count': game_data.get('final_alive_count', 0),
+            'strategies_used': game_data.get('strategies_used', []),
+        }
+        self.game_history.append(game_record)
+        
+        # 保持历史记录不超过100局（避免内存过大）
+        if len(self.game_history) > 100:
+            self.game_history.pop(0)
+        
+        # 2. 更新对手模型
+        for player_name, behaviors in game_data.get('opponent_behaviors', {}).items():
+            self.build_opponent_model(player_name, behaviors)
+        
+        # 3. 索引到情境记忆
+        game_phase = self._classify_game_phase(game_data)
+        self.situation_index[game_phase].append({
+            'game_id': self.total_games,
+            'situation': self._extract_situation_features(game_data),
+            'outcome': game_data.get('won', False),
+        })
+        
+        # 4. 触发策略优化
+        self.update_strategy_weights(game_data)
+    
+    def retrieve_similar_situations(self, current_state: dict) -> list:
+        """检索相似的历史情况
+        
+        Args:
+            current_state: 当前游戏状态
+            
+        Returns:
+            相似情况列表，按相似度排序
+        """
+        similar_situations = []
+        
+        # 确定当前游戏阶段
+        alive_count = current_state.get('alive_count', 9)
+        if alive_count >= 7:
+            phase = 'early_game'
+        elif alive_count >= 4:
+            phase = 'mid_game'
+        else:
+            phase = 'late_game'
+        
+        # 从对应阶段的情境索引中搜索
+        for situation in self.situation_index.get(phase, []):
+            similarity = self._calculate_situation_similarity(
+                current_state, 
+                situation['situation']
+            )
+            
+            if similarity > 0.5:  # 相似度阈值
+                similar_situations.append({
+                    'game_id': situation['game_id'],
+                    'similarity': similarity,
+                    'outcome': situation['outcome'],
+                    'situation': situation['situation'],
+                })
+        
+        # 按相似度排序
+        similar_situations.sort(key=lambda x: x['similarity'], reverse=True)
+        
+        return similar_situations[:5]  # 返回最相似的5个
+    
+    def build_opponent_model(self, player_name: str, behaviors: list):
+        """构建/更新对手行为模型
+        
+        Args:
+            player_name: 玩家名称
+            behaviors: 该玩家的行为记录列表
+        """
+        if player_name not in self.opponent_models:
+            self.opponent_models[player_name] = {
+                'games_met': 0,
+                'speech_style': 'neutral',  # aggressive, conservative, neutral
+                'voting_pattern': 'independent',  # follower, independent, leader
+                'role_history': [],  # 历史角色
+                'trust_score': 0.5,  # 可信度评分
+                'aggression_level': 0.5,
+                'deception_detected': 0,
+            }
+        
+        profile = self.opponent_models[player_name]
+        profile['games_met'] += 1
+        
+        # 分析行为模式
+        for behavior in behaviors:
+            action_type = behavior.get('type')
+            
+            if action_type == 'speech':
+                # 分析发言风格
+                content = behavior.get('content', '')
+                if len(content) > 100:
+                    profile['speech_style'] = 'aggressive'
+                elif len(content) < 30:
+                    profile['speech_style'] = 'conservative'
+            
+            elif action_type == 'vote':
+                # 分析投票模式
+                vote_timing = behavior.get('timing', 'middle')
+                if vote_timing == 'early':
+                    profile['voting_pattern'] = 'leader'
+                elif vote_timing == 'late':
+                    profile['voting_pattern'] = 'follower'
+            
+            elif action_type == 'role_reveal':
+                # 记录角色
+                role = behavior.get('role')
+                if role:
+                    profile['role_history'].append(role)
+        
+        # 更新信任评分
+        profile['trust_score'] = self._calculate_trust_score(profile)
+    
+    # ==================== 4.2 策略优化算法方法 ====================
+    
+    def update_strategy_weights(self, game_result: dict):
+        """基于游戏结果更新策略权重
+        
+        使用简单的强化学习思想：
+        - 获胜 → 增强使用的策略
+        - 失败 → 降低使用的策略
+        
+        Args:
+            game_result: 游戏结果数据
+        """
+        won = game_result.get('won', False)
+        strategies_used = game_result.get('strategies_used', [])
+        
+        # 提取本局实际使用的策略参数快照
+        used_weights = game_result.get('strategy_snapshot', {})
+        
+        for strategy_name in self.strategy_weights.keys():
+            if strategy_name in used_weights:
+                current_weight = self.strategy_weights[strategy_name]
+                
+                if won:
+                    # 胜利：增加权重（但不超过1.0）
+                    adjustment = self.learning_rate * (1 - current_weight)
+                    self.strategy_weights[strategy_name] = min(
+                        1.0, 
+                        current_weight + adjustment
+                    )
+                else:
+                    # 失败：降低权重（但不低于0.0）
+                    adjustment = self.learning_rate * current_weight
+                    self.strategy_weights[strategy_name] = max(
+                        0.0, 
+                        current_weight - adjustment * 0.5  # 降低幅度小一些
+                    )
+        
+        # 记录调整
+        print(f"[学习] 策略权重已更新 {'(胜利)' if won else '(失败)'}")
+    
+    def analyze_successful_patterns(self, winning_games: list):
+        """分析成功模式
+        
+        Args:
+            winning_games: 获胜游戏列表
+        """
+        if not winning_games:
+            return
+        
+        # 按角色分组分析
+        role_patterns = {}
+        
+        for game in winning_games:
+            role = game.get('role')
+            if role not in role_patterns:
+                role_patterns[role] = []
+            
+            # 提取关键特征
+            pattern = {
+                'role': role,
+                'key_decisions': game.get('key_decisions', []),
+                'strategies_used': game.get('strategies_used', []),
+                'game_length': len(game.get('game_flow', [])),
+            }
+            role_patterns[role].append(pattern)
+        
+        # 识别共同模式
+        for role, patterns in role_patterns.items():
+            if len(patterns) >= 2:  # 至少2个样本才分析
+                common_strategies = self._find_common_strategies(patterns)
+                
+                if common_strategies:
+                    self.success_patterns.append({
+                        'role': role,
+                        'strategies': common_strategies,
+                        'success_rate': len(patterns) / self.role_stats[role]['played'],
+                        'sample_count': len(patterns),
+                    })
+    
+    def learn_from_failures(self, losing_games: list):
+        """从失败中学习
+        
+        Args:
+            losing_games: 失败游戏列表
+        """
+        for game in losing_games:
+            # 识别失败原因
+            failure_reason = self._analyze_failure_reason(game)
+            
+            self.failure_patterns.append({
+                'role': game.get('role'),
+                'reason': failure_reason,
+                'key_decisions': game.get('key_decisions', []),
+                'context': {
+                    'game_length': len(game.get('game_flow', [])),
+                    'final_alive': game.get('final_alive_count', 0),
+                },
+            })
+        
+        # 保持失败模式库不超过50条
+        if len(self.failure_patterns) > 50:
+            self.failure_patterns = self.failure_patterns[-50:]
+    
+    def get_strategy_recommendation(self, current_state: dict) -> dict:
+        """根据历史经验推荐策略
+        
+        Args:
+            current_state: 当前游戏状态
+            
+        Returns:
+            策略建议字典
+        """
+        recommendations = {
+            'suggested_aggression': self.strategy_weights['aggressive'],
+            'suggested_risk': self.strategy_weights['risk_tolerance'],
+            'confidence': 0.5,
+            'reasoning': [],
+        }
+        
+        # 检索相似情况
+        similar = self.retrieve_similar_situations(current_state)
+        
+        if similar:
+            # 基于相似情况调整建议
+            successful_similar = [s for s in similar if s['outcome']]
+            
+            if successful_similar:
+                recommendations['confidence'] = 0.8
+                recommendations['reasoning'].append(
+                    f"找到{len(successful_similar)}个成功的相似情况"
+                )
+            else:
+                recommendations['reasoning'].append(
+                    "相似情况的成功率较低，建议谨慎"
+                )
+                recommendations['suggested_risk'] *= 0.8
+        
+        return recommendations
+    
+    # ==================== 4.3 在线学习能力方法 ====================
+    
+    def adapt_to_game_flow(self, current_round: int, game_state: dict):
+        """根据游戏进展动态调整策略
+        
+        Args:
+            current_round: 当前回合数
+            game_state: 游戏状态
+        """
+        alive_count = game_state.get('alive_count', 9)
+        
+        # 判断游戏阶段
+        if alive_count >= 7:
+            phase = 'early'
+        elif alive_count >= 4:
+            phase = 'mid'
+        else:
+            phase = 'late'
+        
+        # 应用阶段适应参数
+        phase_params = self.phase_adaptation.get(phase, {})
+        
+        # 临时调整策略（不永久修改权重）
+        self.current_round_insights['adjusted_risk'] = phase_params.get('risk', 0.5)
+        self.current_round_insights['adjusted_aggression'] = phase_params.get('aggression', 0.5)
+        self.current_round_insights['phase'] = phase
+        
+        # 移除重复日志（已在 _get_strategy_insights 中输出）
+    
+    def recognize_opponent_strategy(self, opponent_actions: list) -> str:
+        """识别对手策略
+        
+        Args:
+            opponent_actions: 对手的行动列表
+            
+        Returns:
+            识别出的策略类型
+        """
+        if not opponent_actions:
+            return 'unknown'
+        
+        # 简单的规则分类
+        action_types = [a.get('type') for a in opponent_actions]
+        
+        # 统计特征
+        speech_count = action_types.count('speech')
+        vote_count = action_types.count('vote')
+        
+        if speech_count > len(opponent_actions) * 0.7:
+            return 'aggressive'  # 激进型（频繁发言）
+        elif speech_count < len(opponent_actions) * 0.3:
+            return 'conservative'  # 保守型（很少发言）
+        else:
+            return 'balanced'  # 平衡型
+    
+    def adjust_strategy_realtime(self, new_information: dict):
+        """实时调整策略
+        
+        Args:
+            new_information: 新获得的信息
+        """
+        event_type = new_information.get('event_type')
+        
+        # 根据关键事件调整
+        if event_type == 'key_role_died':
+            # 关键角色死亡
+            role = new_information.get('role')
+            if role in ['seer', 'witch']:
+                # 调高风险容忍度（形势紧急）
+                self.current_round_insights['adjusted_risk'] = min(
+                    1.0,
+                    self.current_round_insights.get('adjusted_risk', 0.5) + 0.2
+                )
+                self.strategy_adjustments.append({
+                    'round': new_information.get('round', 0),
+                    'reason': f'{role}死亡，提高风险容忍度',
+                    'adjustment': '+0.2 risk',
+                })
+        
+        elif event_type == '被质疑':
+            # 被多人质疑时降低激进程度
+            self.current_round_insights['adjusted_aggression'] = max(
+                0.2,
+                self.current_round_insights.get('adjusted_aggression', 0.5) - 0.3
+            )
+            self.strategy_adjustments.append({
+                'round': new_information.get('round', 0),
+                'reason': '被质疑，降低激进程度',
+                'adjustment': '-0.3 aggression',
+            })
+        
+        elif event_type == 'alliance_formed':
+            # 形成联盟时提高信任阈值
+            self.current_round_insights['adjusted_trust'] = min(
+                0.9,
+                self.strategy_weights['trust_threshold'] + 0.1
+            )
+    
+    # ==================== 辅助方法 ====================
+    
+    def _classify_game_phase(self, game_data: dict) -> str:
+        """分类游戏阶段"""
+        final_alive = game_data.get('final_alive_count', 0)
+        if final_alive >= 7:
+            return 'early_game'
+        elif final_alive >= 4:
+            return 'mid_game'
+        else:
+            return 'late_game'
+    
+    def _extract_situation_features(self, game_data: dict) -> dict:
+        """提取情境特征"""
+        return {
+            'role': game_data.get('role'),
+            'alive_count': game_data.get('final_alive_count', 0),
+            'strategies_used': game_data.get('strategies_used', []),
+        }
+    
+    def _calculate_situation_similarity(self, state1: dict, state2: dict) -> float:
+        """计算情境相似度"""
+        similarity = 0.0
+        
+        # 角色相同 +0.4
+        if state1.get('role') == state2.get('role'):
+            similarity += 0.4
+        
+        # 存活人数接近 +0.3
+        alive1 = state1.get('alive_count', 9)
+        alive2 = state2.get('alive_count', 9)
+        if abs(alive1 - alive2) <= 1:
+            similarity += 0.3
+        elif abs(alive1 - alive2) <= 2:
+            similarity += 0.15
+        
+        # 策略相似 +0.3
+        strategies1 = set(state1.get('strategies_used', []))
+        strategies2 = set(state2.get('strategies_used', []))
+        if strategies1 and strategies2:
+            overlap = len(strategies1 & strategies2) / len(strategies1 | strategies2)
+            similarity += 0.3 * overlap
+        
+        return similarity
+    
+    def _calculate_trust_score(self, profile: dict) -> float:
+        """计算对手信任评分"""
+        # 简单规则
+        base_score = 0.5
+        
+        # 见面次数多 → 更了解
+        games_met = profile.get('games_met', 0)
+        if games_met > 3:
+            base_score += 0.1
+        
+        # 欺骗检测次数 → 降低信任
+        deception = profile.get('deception_detected', 0)
+        base_score -= deception * 0.1
+        
+        return max(0.0, min(1.0, base_score))
+    
+    def _find_common_strategies(self, patterns: list) -> list:
+        """找出共同策略"""
+        if not patterns:
+            return []
+        
+        # 统计每个策略的出现次数
+        strategy_count = {}
+        for pattern in patterns:
+            for strategy in pattern.get('strategies_used', []):
+                strategy_count[strategy] = strategy_count.get(strategy, 0) + 1
+        
+        # 返回出现频率 >= 50% 的策略
+        threshold = len(patterns) * 0.5
+        common = [s for s, count in strategy_count.items() if count >= threshold]
+        
+        return common
+    
+    def _analyze_failure_reason(self, game: dict) -> str:
+        """分析失败原因"""
+        # 简化版本：基于游戏长度和角色
+        game_length = len(game.get('game_flow', []))
+        role = game.get('role')
+        
+        if game_length < 3:
+            return '早期出局'
+        elif role == 'werewolf':
+            return '狼队被压制'
+        elif role in ['seer', 'witch', 'hunter']:
+            return '关键角色未发挥作用'
+        else:
+            return '好人阵营被狼压制'
+    
     def record_game_result(self, won: bool):
-        """记录游戏结果"""
+        """记录游戏结果（增强版）"""
         self.total_games += 1
         if won:
             self.wins += 1
@@ -845,6 +1366,29 @@ class PlayerMemory:
         else:
             self.losses += 1
         
+        # 存储完整游戏经验
+        game_data = {
+            'role': self.current_game['role'],
+            'won': won,
+            'key_decisions': self.current_game.get('key_decisions', []),
+            'opponent_behaviors': {},  # 需要从 speeches 中提取
+            'game_flow': self.current_game.get('night_results', []),
+            'final_alive_count': len(self.current_game.get('alive_players', [])),
+            'strategies_used': list(self.strategy_weights.keys()),
+            'strategy_snapshot': self.strategy_weights.copy(),
+        }
+        
+        # 存储经验
+        self.store_game_experience(game_data)
+        
+        # 定期分析（每5局）
+        if self.total_games % 5 == 0:
+            winning_games = [g for g in self.game_history if g.get('won')]
+            losing_games = [g for g in self.game_history if not g.get('won')]
+            
+            self.analyze_successful_patterns(winning_games)
+            self.learn_from_failures(losing_games)
+        
         # 重置当前游戏
         self.current_game = {
             'role': None,
@@ -852,8 +1396,14 @@ class PlayerMemory:
             'dead_players': [],
             'night_results': [],
             'speeches': [],
-            'votes': []
+            'votes': [],
+            'key_decisions': [],
+            'game_round': 0,
         }
+        
+        # 清空实时学习状态
+        self.current_round_insights = {}
+        self.opponent_live_tracking = {}
     
     def get_insights_for_prompt(self) -> str:
         """生成用于prompt的经验总结"""
@@ -882,24 +1432,58 @@ class PlayerMemory:
         return insights
     
     def to_dict(self) -> dict:
-        """序列化为字典"""
+        """序列化为字典（增强版 - 包含所有学习数据）"""
         return {
+            # 基础统计
             'total_games': self.total_games,
             'wins': self.wins,
             'losses': self.losses,
             'role_stats': self.role_stats,
-            'player_profiles': self.player_profiles,
-            'learned_patterns': self.learned_patterns
+            
+            # 经验记忆系统
+            'game_history': self.game_history[-20:],  # 只保存最近20局
+            'opponent_models': self.opponent_models,
+            'situation_index': self.situation_index,
+            
+            # 策略优化
+            'strategy_weights': self.strategy_weights,
+            'success_patterns': self.success_patterns,
+            'failure_patterns': self.failure_patterns,
+            'learning_rate': self.learning_rate,
+            
+            # 在线学习
+            'phase_adaptation': self.phase_adaptation,
+            'strategy_adjustments': self.strategy_adjustments[-10:],  # 最近10次调整
         }
     
     def from_dict(self, data: dict):
-        """从字典恢复"""
+        """从字典恢复（增强版 - 恢复所有学习数据）"""
+        # 基础统计
         self.total_games = data.get('total_games', 0)
         self.wins = data.get('wins', 0)
         self.losses = data.get('losses', 0)
         self.role_stats = data.get('role_stats', self.role_stats)
-        self.player_profiles = data.get('player_profiles', {})
-        self.learned_patterns = data.get('learned_patterns', [])
+        
+        # 经验记忆系统
+        self.game_history = data.get('game_history', [])
+        self.opponent_models = data.get('opponent_models', {})
+        self.situation_index = data.get('situation_index', {
+            'early_game': [],
+            'mid_game': [],
+            'late_game': [],
+        })
+        
+        # 策略优化
+        self.strategy_weights = data.get('strategy_weights', self.strategy_weights)
+        self.success_patterns = data.get('success_patterns', [])
+        self.failure_patterns = data.get('failure_patterns', [])
+        self.learning_rate = data.get('learning_rate', 0.1)
+        
+        # 在线学习
+        self.phase_adaptation = data.get('phase_adaptation', self.phase_adaptation)
+        self.strategy_adjustments = data.get('strategy_adjustments', [])
+        
+        print(f"[记忆恢复] 已加载 {self.total_games} 局游戏经验")
 
 
 class PlayerAgent(ReActAgent):
@@ -924,6 +1508,7 @@ class PlayerAgent(ReActAgent):
         self.player_memory = PlayerMemory()
         self.current_role: Optional[str] = None
         self._current_phase: Optional[str] = None  # 'night' 或 'day'
+        self._last_logged_round: int = -1  # 用于减少重复日志
         
         # 初始化策略优化模块 - 你的负责部分！
         self.decision_maker = DecisionMaker(name)
@@ -933,14 +1518,17 @@ class PlayerAgent(ReActAgent):
         self.role_adapter = RoleAdapter()
         
         # 调用父类初始化
+        # 🔴 关键修复：禁用 ReActAgent 的工具系统，因为我们使用结构化输出
         super().__init__(
             name=name,
             sys_prompt=self._build_base_prompt(),  # 基础prompt
             model=DashScopeChatModel(
-                api_key=os.environ.get("DASHSCOPE_API_KEY"),
+                api_key=os.environ.get("DASHSCOPE_API_KEY", "sk-ee90284984134a15b2a89a5359c845fa"),  # 添加默认值
                 model_name="qwen3-max",
             ),
             formatter=DashScopeMultiAgentFormatter(),
+            toolkit=[],  # 🔴 传递空工具列表，禁用默认的 generate_response 工具
+            max_iters=1,  # 🔴 只执行一次，不进行多轮推理
         )
     
     @property
@@ -957,7 +1545,7 @@ class PlayerAgent(ReActAgent):
         return f"{base}\n\n{role_specific}\n\n{memory_insights}\n\n{strategy_insights}"
     
     def _get_strategy_insights(self) -> str:
-        """获取策略模块的建议"""
+        """获取策略模块的建议（增强版 - 集成学习模块）"""
         if not self.current_role:
             return ""
         
@@ -966,15 +1554,61 @@ class PlayerAgent(ReActAgent):
         
         insights = "# 策略分析建议\n\n"
         
-        # 1. 风险评估
+        # ========== 优化：仅在游戏开始后且存活玩家数据有效时执行学习模块 ==========
+        alive_count = game_state.get('alive_count', 0)
+        current_round = game_state.get('night_count', 0)
+        
+        # 只在游戏进行中且数据有效时调用学习模块
+        if alive_count > 0 and current_round > 0:
+            # ========== 在线学习 - 游戏流程适应 ==========
+            self.player_memory.adapt_to_game_flow(current_round, game_state)
+            # 只在轮次变化时输出日志，减少重复
+            if current_round != getattr(self, '_last_logged_round', -1):
+                print(f"🧠 [{self.name}] 学习模块: 游戏阶段适应 (轮次:{current_round}, 存活:{alive_count})")
+                self._last_logged_round = current_round
+        
+        # 1. 风险评估（结合学习到的风险容忍度）
         reveal_risk = self.risk_assessment.evaluate_action_risk('reveal_identity', game_state)
         aggressive_risk = self.risk_assessment.evaluate_action_risk('aggressive_vote', game_state)
         win_prob = self.risk_assessment.assess_win_probability(game_state)
         
+        # 应用实时调整的风险参数
+        adjusted_risk = self.player_memory.current_round_insights.get('adjusted_risk', 0.5)
+        adjusted_aggression = self.player_memory.current_round_insights.get('adjusted_aggression', 0.5)
+        
         insights += f"## 当前局势评估\n"
         insights += f"- 暴露身份风险: {'高' if reveal_risk > 0.7 else '中' if reveal_risk > 0.4 else '低'}\n"
         insights += f"- 激进投票风险: {'高' if aggressive_risk > 0.7 else '中' if aggressive_risk > 0.4 else '低'}\n"
-        insights += f"- 胜利概率: {win_prob:.1%}\n\n"
+        insights += f"- 胜利概率: {win_prob:.1%}\n"
+        insights += f"- 当前建议风险容忍度: {adjusted_risk:.2f}\n"
+        insights += f"- 当前建议激进程度: {adjusted_aggression:.2f}\n\n"
+        
+        # ========== 经验记忆 - 检索相似情况（仅在有历史数据且游戏进行中时） ==========
+        if alive_count > 0 and self.player_memory.total_games >= 3:
+            similar_situations = self.player_memory.retrieve_similar_situations(game_state)
+            if similar_situations:
+                print(f"📚 [{self.name}] 学习模块: 检索到 {len(similar_situations)} 个相似历史情况")
+                insights += f"## 历史经验参考\n"
+                success_count = sum(1 for s in similar_situations if s['outcome'])
+                insights += f"- 找到 {len(similar_situations)} 个相似情况\n"
+                insights += f"- 其中成功 {success_count} 次\n"
+                if success_count > len(similar_situations) / 2:
+                    insights += f"- 建议: 当前情况历史胜率较高，可适度激进\n"
+                else:
+                    insights += f"- 建议: 当前情况历史胜率较低，需谨慎行动\n"
+                insights += "\n"
+        
+        # ========== 策略优化 - 获取推荐策略（仅在游戏进行中且有历史数据时） ==========
+        if alive_count > 0 and self.player_memory.total_games >= 2:
+            strategy_rec = self.player_memory.get_strategy_recommendation(game_state)
+            if strategy_rec.get('reasoning'):
+                print(f"💡 [{self.name}] 学习模块: 生成策略推荐 (置信度:{strategy_rec['confidence']:.2f})")
+                insights += f"## 策略推荐\n"
+                for reason in strategy_rec['reasoning']:
+                    insights += f"- {reason}\n"
+                insights += f"- 推荐激进度: {strategy_rec['suggested_aggression']:.2f}\n"
+                insights += f"- 推荐风险: {strategy_rec['suggested_risk']:.2f}\n"
+                insights += f"- 置信度: {strategy_rec['confidence']:.2f}\n\n"
         
         # 2. 决策建议（如果有具体场景）
         if hasattr(self, '_current_phase') and self._current_phase:
@@ -999,15 +1633,54 @@ class PlayerAgent(ReActAgent):
             insights += f"## 团队协作提示\n"
             insights += f"- {coordination.get('communication_strategy', '与队友充分沟通')}\n\n"
         
+        # ========== 新增：显示当前策略权重 ==========
+        if self.player_memory.total_games > 0:
+            insights += f"## 当前策略参数（基于{self.player_memory.total_games}局经验）\n"
+            for key, value in self.player_memory.strategy_weights.items():
+                insights += f"- {key}: {value:.2f}\n"
+            insights += "\n"
+        
         return insights
+    
+    
+    def _is_critical_event(self, content: str) -> bool:
+        """判断是否为关键事件，只在关键事件时触发学习模块
+        
+        Args:
+            content: 消息内容
+            
+        Returns:
+            bool: 是否为关键事件
+        """
+        critical_keywords = [
+            # 角色死亡
+            'has been eliminated', 'died', '已被淘汰', '死亡',
+            # 关键角色
+            'seer', '预言家', 'witch', '女巫', 'hunter', '猎人',
+            # 被质疑
+            '怀疑', '可疑', 'suspect', 'suspicious',
+            # 投票相关
+            'vote', '投票', 'voting result', '投票结果',
+            # 游戏结束
+            'win', 'lose', '获胜', '失败', '游戏结束'
+        ]
+        
+        content_lower = content.lower()
+        return any(keyword in content_lower or keyword in content for keyword in critical_keywords)
     
     def _build_game_state(self) -> dict:
         """构建当前游戏状态字典"""
+        alive_players = self.player_memory.current_game.get('alive_players', [])
+        
+        # 🔴 添加警告：如果存活玩家列表为空
+        if not alive_players and self.player_memory.current_game.get('game_round', 0) > 0:
+            print(f"⚠️ [{self.name}] 警告: alive_players 列表为空，游戏轮次 {self.player_memory.current_game.get('game_round', 0)}")
+        
         return {
             'role': self.current_role,
-            'alive_players': self.player_memory.current_game.get('alive_players', []),
+            'alive_players': alive_players,
             'dead_players': self.player_memory.current_game.get('dead_players', []),
-            'alive_count': len(self.player_memory.current_game.get('alive_players', [])),
+            'alive_count': len(alive_players),
             'speeches': self.player_memory.current_game.get('speeches', []),
             'night_results': self.player_memory.current_game.get('night_results', []),
             'votes': self.player_memory.current_game.get('votes', []),
@@ -1018,6 +1691,8 @@ class PlayerAgent(ReActAgent):
     def _build_base_prompt(self) -> str:
         """构建基础prompt"""
         return f"""你是 {self.name}，一名狼人杀游戏玩家。
+
+    
 
 # 游戏目标
 你的目标是和你的队友一起获得胜利。
@@ -1069,8 +1744,14 @@ class PlayerAgent(ReActAgent):
 - 这是文本游戏，不要编造非文本信息
 - 必须基于已知事实进行推理
 - 避免重复他人的发言
-- 你的回复要简洁（避免超过2048字符）
+- 你的回复要简洁直接（避免超过2048字符）
 - 决策要在30秒内完成
+
+## 🔴 输出格式约束（必读）
+- 当需要结构化输出时，严格按照提示词中的JSON格式输出
+- 不要使用任何工具调用（tool call）格式
+- 不要使用 generate_response 或其他函数调用
+- 直接以文本或JSON格式回复，不添加额外标记
 """
     
     def _get_role_specific_prompt(self) -> str:
@@ -1083,6 +1764,27 @@ class PlayerAgent(ReActAgent):
             return fragment
         # 回退旧逻辑（保持兼容性）
         return ""
+    
+    def _extract_player_name_from_text(self, text: str | list) -> str | None:
+        """
+        从文本中提取玩家名字（用于当结构化输出缺失时的兜底）
+        匹配格式: "Player1", "Player2", ..., "Player9"
+        """
+        import re
+        
+        # 处理content可能是列表的情况
+        if isinstance(text, list):
+            text = " ".join(str(item) for item in text)
+        elif not isinstance(text, str):
+            text = str(text)
+        
+        # 优先匹配 "Player[数字]" 格式
+        pattern = r'\bPlayer[1-9]\b'
+        matches = re.findall(pattern, text)
+        if matches:
+            # 返回最后一次出现的名字（通常是决策）
+            return matches[-1]
+        return None
     
     async def observe(self, msg: Msg | list[Msg] | None) -> None:
         """观察函数 - 接收并处理游戏信息
@@ -1158,9 +1860,165 @@ class PlayerAgent(ReActAgent):
                 self._current_phase = 'night'
             elif 'day' in content.lower() or 'discussion' in content.lower():
                 self._current_phase = 'day'
+            
+            # ========== 优化：实时学习 - 仅在关键事件时触发 ==========
+            if self._is_critical_event(content):
+                # 检测关键角色死亡
+                if "has been eliminated" in content or "died" in content:
+                    # 分析是否是关键角色
+                    if "seer" in content.lower() or "预言家" in content:
+                        print(f"⚡ [{self.name}] 关键事件: 预言家死亡，调整策略")
+                        self.player_memory.adjust_strategy_realtime({
+                            'event_type': 'key_role_died',
+                            'role': 'seer',
+                            'round': self.player_memory.current_game.get('game_round', 0),
+                        })
+                    elif "witch" in content.lower() or "女巫" in content:
+                        print(f"⚡ [{self.name}] 关键事件: 女巫死亡，调整策略")
+                        self.player_memory.adjust_strategy_realtime({
+                            'event_type': 'key_role_died',
+                            'role': 'witch',
+                            'round': self.player_memory.current_game.get('game_round', 0),
+                        })
+                
+                # 检测被质疑事件（如果消息中提到自己且有"怀疑"、"可疑"等词）
+                if self.name in content:
+                    if any(word in content for word in ['怀疑', '可疑', 'suspect', 'suspicious']):
+                        print(f"⚡ [{self.name}] 关键事件: 被质疑，调整防御姿态")
+                        self.player_memory.adjust_strategy_realtime({
+                            'event_type': '被质疑',
+                            'round': self.player_memory.current_game.get('game_round', 0),
+                        })
+            
+            # ========== 优化：实时跟踪对手行为（仅在关键事件或有意义的发言时） ==========
+            if hasattr(message, 'name') and message.name and message.name != self.name:
+                # 排除 Moderator（裁判不是玩家）
+                if message.name == 'Moderator':
+                    continue
+                
+                # 只在有意义的内容时记录（长度>20字符或关键事件）
+                if len(content) > 20 or self._is_critical_event(content):
+                    player_name = message.name
+                    
+                    # 初始化跟踪
+                    if player_name not in self.player_memory.opponent_live_tracking:
+                        self.player_memory.opponent_live_tracking[player_name] = {
+                            'actions': [],
+                            'style': 'unknown',
+                        }
+                    
+                    # 记录行为
+                    action_type = 'speech' if len(content) > 20 else 'short_speech'
+                    self.player_memory.opponent_live_tracking[player_name]['actions'].append({
+                        'type': action_type,
+                        'content': content[:100],  # 只保留前100字符
+                        'round': self.player_memory.current_game.get('game_round', 0),
+                    })
+                    
+                    # 实时识别策略（每3次行为分析一次）
+                    if len(self.player_memory.opponent_live_tracking[player_name]['actions']) >= 3:
+                        opponent_strategy = self.player_memory.recognize_opponent_strategy(
+                            self.player_memory.opponent_live_tracking[player_name]['actions']
+                        )
+                        if opponent_strategy != self.player_memory.opponent_live_tracking[player_name]['style']:
+                            print(f"👁️ [{self.name}] 对手分析: {player_name} 策略识别为 '{opponent_strategy}'")
+                        self.player_memory.opponent_live_tracking[player_name]['style'] = opponent_strategy
         
         # 调用父类的observe
         return await super().observe(msg)
+    
+    async def __call__(self, *args, **kwargs):
+        """重写__call__方法以验证结构化输出
+        
+        确保所有结构化输出字段都存在,避免metadata缺失导致的错误
+        由于我们禁用了工具系统(toolkit=[])，不再需要处理工具调用错误
+        """
+        max_retries = 2
+        last_error = None
+        
+        for attempt in range(max_retries):
+            try:
+                # 调用父类方法
+                response = await super().__call__(*args, **kwargs)
+                
+                # 如果使用了结构化输出模型,验证响应完整性
+                if 'structured_model' in kwargs and kwargs['structured_model'] is not None:
+                    model_class = kwargs['structured_model']
+                    
+                    # 🔴 修复: 确保metadata存在
+                    if response.metadata is None:
+                        response.metadata = {}
+                    
+                    # 🔴 修复字段名映射: LLM有时输出错误的字段名
+                    field_mappings = {
+                        'check_target': 'name',    # Seer: 查验目标
+                        'target': 'name',          # 通用: 目标玩家
+                        'shoot_target': 'name',    # Hunter: 射杀目标
+                        'poison_target': 'name',   # Witch: 毒杀目标
+                        'vote_target': 'vote',     # Vote: 投票目标
+                    }
+                    
+                    for wrong_field, correct_field in field_mappings.items():
+                        if wrong_field in response.metadata and correct_field not in response.metadata:
+                            response.metadata[correct_field] = response.metadata[wrong_field]
+                            del response.metadata[wrong_field]
+                            print(f"⚠️ [{self.name}] 字段映射: {wrong_field} -> {correct_field} = {response.metadata[correct_field]}")
+                    
+                    # 🔴 修复: 确保所有必需字段都在metadata中
+                    if hasattr(model_class, 'model_fields'):
+                        for field_name, field_info in model_class.model_fields.items():
+                            # 如果是必填字段但不在metadata中,添加默认值
+                            if field_info.is_required() and field_name not in response.metadata:
+                                # 根据字段类型设置默认值
+                                if field_info.annotation == bool:
+                                    default_value = False
+                                elif field_name == 'reach_agreement':
+                                    default_value = False  # 狼人讨论默认未达成一致
+                                elif field_name == 'poison':
+                                    default_value = False  # 女巫默认不使用毒药
+                                elif field_name == 'resurrect':
+                                    default_value = False  # 女巫默认不救人
+                                elif field_name == 'shoot':
+                                    default_value = False  # 猎人默认不开枪
+                                elif field_name == 'name':
+                                    # name字段由LLM推理决定(查验/射杀/毒杀目标)
+                                    # 对于Seer是必填的,需要从文本提取
+                                    extracted_name = self._extract_player_name_from_text(response.content)
+                                    if extracted_name:
+                                        default_value = extracted_name
+                                        print(f"⚠️ [{self.name}] 从文本提取目标: {extracted_name}")
+                                    else:
+                                        # Hunter/Witch的name可为None,但Seer必须有
+                                        # 这里统一设为None,让Pydantic验证决定是否报错
+                                        default_value = None
+                                elif field_name == 'vote':
+                                    # vote字段由LLM推理决定,是必填字段!
+                                    # 如果缺失,从文本中尝试提取玩家名字
+                                    extracted_name = self._extract_player_name_from_text(response.content)
+                                    if extracted_name:
+                                        default_value = extracted_name
+                                        print(f"⚠️ [{self.name}] 从文本提取投票目标: {extracted_name}")
+                                    else:
+                                        # 完全无法提取,抛出错误触发重试
+                                        raise ValueError(f"LLM未输出投票目标 'vote' 字段,且无法从文本提取")
+                                else:
+                                    default_value = None
+                                
+                                response.metadata[field_name] = default_value
+                                if attempt == 0:  # 只在第一次尝试时打印
+                                    print(f"⚠️ [{self.name}] 结构化输出修复: 添加缺失字段 '{field_name}' = {default_value}")
+                
+                return response
+                
+            except Exception as e:
+                last_error = e
+                if attempt < max_retries - 1:
+                    print(f"⚠️ [{self.name}] 调用失败 (尝试 {attempt + 1}/{max_retries}): {str(e)[:100]}")
+                    import asyncio
+                    await asyncio.sleep(1)  # 短暂等待后重试
+                else:
+                    print(f"❌ [{self.name}] 调用失败，已达最大重试次数: {str(e)[:100]}")
+                    raise
     
     def state_dict(self) -> dict:
         """保存状态 - 跨局学习的关键！"""
