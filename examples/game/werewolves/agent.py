@@ -1522,14 +1522,111 @@ class PlayerAgent(ReActAgent):
         super().__init__(
             name=name,
             sys_prompt=self._build_base_prompt(),  # 基础prompt
-            model=DashScopeChatModel(
-                api_key=os.environ.get("DASHSCOPE_API_KEY", "sk-ee90284984134a15b2a89a5359c845fa"),  # 添加默认值
-                model_name="qwen3-max",
-            ),
-            formatter=DashScopeMultiAgentFormatter(),
+            model=self._get_model_config(),  # 🆓 使用配置的模型
+            formatter=self._get_formatter(),  # 🆓 根据模型选择formatter
             toolkit=[],  # 🔴 传递空工具列表，禁用默认的 generate_response 工具
             max_iters=1,  # 🔴 只执行一次，不进行多轮推理
         )
+        
+        # 🔴 关键修复：覆盖 memory 的 add 方法以过滤工具调用
+        original_add = self.memory.add
+        def filtered_add(msg):
+            """过滤工具调用消息后再添加到记忆"""
+            if isinstance(msg, Msg):
+                content = msg.content
+                # 跳过工具调用消息
+                if isinstance(content, dict) and content.get('type') == 'tool_use':
+                    print(f"🔒 [{self.name}] 阻止工具调用进入记忆")
+                    return
+                # 跳过包含工具错误的消息
+                if isinstance(content, str) and ('tool_result' in content or 'generate_response()' in content):
+                    print(f"🔒 [{self.name}] 阻止工具错误进入记忆")
+                    return
+            return original_add(msg)
+        
+        self.memory.add = filtered_add
+    
+    def _get_model_config(self):
+        """获取模型配置 - 支持多种免费模型"""
+        # 🆓 从环境变量读取模型选择，默认使用 DeepSeek (你已经有 API Key)
+        model_type = os.environ.get("WEREWOLF_MODEL", "deepseek")
+        
+        if model_type == "ollama":
+            # Ollama - 本地运行，完全免费
+            from agentscope.model import OllamaModel
+            return OllamaModel(
+                model_name=os.environ.get("OLLAMA_MODEL", "qwen2:7b"),  # 可选: llama3, mistral, qwen2
+                host=os.environ.get("OLLAMA_HOST", "http://localhost:11434"),
+            )
+        
+        elif model_type == "dashscope":
+            # 阿里云 DashScope - 新用户有免费额度
+            from agentscope.model import DashScopeChatModel
+            return DashScopeChatModel(
+                api_key=os.environ.get("DASHSCOPE_API_KEY", "sk-ee90284984134a15b2a89a5359c845fa"),
+                model_name=os.environ.get("DASHSCOPE_MODEL", "qwen-turbo"),  # qwen-turbo 有免费额度
+            )
+        
+        elif model_type == "deepseek":
+            # DeepSeek - 价格极低，有免费试用
+            from agentscope.model import OpenAIChatModel
+            return OpenAIChatModel(
+                model_name="deepseek-chat",
+                api_key=os.environ.get("DEEPSEEK_API_KEY", "sk-0737d735d2ac4ebdae618f16d335a631"),  # 你的 API Key
+                client_args={
+                    "base_url": "https://api.deepseek.com/v1",
+                    "max_retries": 2,  # 降低重试次数加快失败恢复
+                },
+            )
+        
+        elif model_type == "groq":
+            # Groq - 免费且极快
+            from agentscope.model import OpenAIChatModel
+            return OpenAIChatModel(
+                model_name="llama-3.3-70b-versatile",  # 或 mixtral-8x7b-32768
+                api_key=os.environ.get("GROQ_API_KEY"),
+                client_args={"base_url": "https://api.groq.com/openai/v1"},  # 使用 client_args 传递 base_url
+            )
+        
+        else:
+            # 默认回退到 DeepSeek (你已经有 API Key)
+            from agentscope.model import OpenAIChatModel
+            return OpenAIChatModel(
+                model_name="deepseek-chat",
+                api_key="sk-0737d735d2ac4ebdae618f16d335a631",
+                client_args={
+                    "base_url": "https://api.deepseek.com/v1",
+                    "max_retries": 2,
+                },
+            )
+    
+    def _get_formatter(self):
+        """根据模型类型选择formatter"""
+        model_type = os.environ.get("WEREWOLF_MODEL", "deepseek")
+        
+        if model_type == "dashscope":
+            from agentscope.formatter import DashScopeMultiAgentFormatter
+            return DashScopeMultiAgentFormatter()
+        
+        elif model_type == "deepseek":
+            # DeepSeek 有专门的 formatter
+            from agentscope.formatter import DeepSeekMultiAgentFormatter
+            return DeepSeekMultiAgentFormatter()
+        
+        elif model_type == "ollama":
+            # Ollama 有专门的 formatter
+            from agentscope.formatter import OllamaMultiAgentFormatter
+            return OllamaMultiAgentFormatter()
+        
+        elif model_type == "groq":
+            # Groq 使用 OpenAI 兼容的 formatter (因为用的 OpenAI API 格式)
+            from agentscope.formatter import OpenAIMultiAgentFormatter
+            return OpenAIMultiAgentFormatter()
+        
+        else:
+            # 默认使用 DeepSeek formatter
+            from agentscope.formatter import DeepSeekMultiAgentFormatter
+            return DeepSeekMultiAgentFormatter()
     
     @property
     def sys_prompt(self) -> str:
@@ -1610,37 +1707,8 @@ class PlayerAgent(ReActAgent):
                 insights += f"- 推荐风险: {strategy_rec['suggested_risk']:.2f}\n"
                 insights += f"- 置信度: {strategy_rec['confidence']:.2f}\n\n"
         
-        # 2. 决策建议（如果有具体场景）
-        if hasattr(self, '_current_phase') and self._current_phase:
-            if self._current_phase == 'night':
-                decision = self.decision_maker.night_phase_decision(self.current_role, game_state)
-                # 角色策略微调夜晚决策
-                decision = self.role_adapter.shape_night_decision(self.current_role, decision)
-                insights += f"## 夜晚决策建议\n"
-                insights += f"- {decision.get('reasoning', '根据当前情况谨慎选择')}\n\n"
-            elif self._current_phase == 'day':
-                decision = self.decision_maker.day_phase_decision(game_state)
-                # 角色策略微调白天决策
-                decision = self.role_adapter.shape_day_decision(self.current_role, decision)
-                insights += f"## 白天策略建议\n"
-                insights += f"- 发言策略: {decision.get('speech', '分析局势')}\n\n"
-        
-        # 3. 团队协作（狼人专用）
-        if self.current_role == 'werewolf':
-            coordination = self.team_coordination.coordinate_with_team(
-                [], 'night_kill', game_state
-            )
-            insights += f"## 团队协作提示\n"
-            insights += f"- {coordination.get('communication_strategy', '与队友充分沟通')}\n\n"
-        
-        # ========== 新增：显示当前策略权重 ==========
-        if self.player_memory.total_games > 0:
-            insights += f"## 当前策略参数（基于{self.player_memory.total_games}局经验）\n"
-            for key, value in self.player_memory.strategy_weights.items():
-                insights += f"- {key}: {value:.2f}\n"
-            insights += "\n"
-        
-        return insights
+        # 移除冗余输出以减少token
+        return insights if len(insights) < 100 else ""
     
     
     def _is_critical_event(self, content: str) -> bool:
@@ -1689,69 +1757,21 @@ class PlayerAgent(ReActAgent):
         }
     
     def _build_base_prompt(self) -> str:
-        """构建基础prompt"""
-        return f"""你是 {self.name}，一名狼人杀游戏玩家。
+        """构建基础prompt - 精简版以减少token消耗"""
+        return f"""CRITICAL: You MUST respond in PLAIN TEXT only. NO function calls. NO tool_use format.
 
-    
+Role: {self.name} in 9-player Werewolf game
+Goal: Your team wins
 
-# 游戏目标
-你的目标是和你的队友一起获得胜利。
+Players: 3 Wolves, 3 Villagers, 1 Seer, 1 Witch, 1 Hunter
+Win: Wolves≥Villagers (Wolf win) | All wolves dead (Village win)
 
-# 游戏规则
-九人局狼人杀：
-- 3个狼人 🐺：每晚杀一人，白天隐藏身份
-- 3个村民 👨‍🌾：无特殊能力，通过推理找出狼人
-- 1个预言家 🔮：每晚可以查验一人的身份
-- 1个女巫 🧙‍♀️：有一瓶解药和一瓶毒药（各只能用一次）
-- 1个猎人 🏹：死亡时可以开枪带走一人
+Output format:
+- Plain text reasoning + JSON structure
+- Example: "I think Player3 is suspicious. {{\"vote\":\"Player3\"}}"
+- NEVER use: {{"type":"tool_use"}}, generate_response(), or function calls
 
-胜利条件：
-- 狼人胜：狼人数量 ≥ 好人数量
-- 好人胜：所有狼人死亡
-
-# 游戏流程
-1. 夜晚阶段：
-   - 狼人讨论并投票杀人
-   - 女巫决定是否使用药水
-   - 预言家查验一人身份
-   
-2. 白天阶段：
-   - 法官宣布夜晚结果
-   - 所有存活玩家依次发言
-   - 投票淘汰一人
-
-# 核心策略指导
-
-## 通用原则
-- 仔细分析每个人的发言，寻找逻辑漏洞
-- 注意投票行为，谁投了谁很重要
-- 夜晚结果提供关键线索（是否有人被救、被毒等）
-- 不要编造不存在的信息
-- 发言要简洁有力，提供清晰的推理链
-
-## 身份隐藏与伪装
-- 作为狼人时，可以伪装成村民或其他角色
-- 保持发言的一致性，避免前后矛盾
-- 适当时候可以质疑别人，但不要过于激进
-
-## 信息分析
-- 谁说自己是预言家？验证结果是否合理？
-- 谁的发言逻辑有问题？
-- 谁在跟票？谁在带节奏？
-- 注意观察沉默的玩家
-
-## 重要提醒
-- 这是文本游戏，不要编造非文本信息
-- 必须基于已知事实进行推理
-- 避免重复他人的发言
-- 你的回复要简洁直接（避免超过2048字符）
-- 决策要在30秒内完成
-
-## 🔴 输出格式约束（必读）
-- 当需要结构化输出时，严格按照提示词中的JSON格式输出
-- 不要使用任何工具调用（tool call）格式
-- 不要使用 generate_response 或其他函数调用
-- 直接以文本或JSON格式回复，不添加额外标记
+Keep responses under 200 words.
 """
     
     def _get_role_specific_prompt(self) -> str:
@@ -1778,8 +1798,8 @@ class PlayerAgent(ReActAgent):
         elif not isinstance(text, str):
             text = str(text)
         
-        # 优先匹配 "Player[数字]" 格式
-        pattern = r'\bPlayer[1-9]\b'
+        # 优先匹配 "Player[数字]" 格式 (支持Player1-Player99)
+        pattern = r'\bPlayer\d+\b'
         matches = re.findall(pattern, text)
         if matches:
             # 返回最后一次出现的名字（通常是决策）
@@ -1800,7 +1820,27 @@ class PlayerAgent(ReActAgent):
         # 处理单个消息或消息列表
         messages = [msg] if isinstance(msg, Msg) else msg
         
+        # 🔴 关键修复：过滤掉工具调用消息，防止后续玩家模仿
+        filtered_messages = []
         for message in messages:
+            content = message.content
+            
+            # 检测并跳过工具调用消息
+            is_tool_call = False
+            if isinstance(content, dict):
+                if content.get('type') == 'tool_use' or 'name' in content and content.get('name') == 'generate_response':
+                    is_tool_call = True
+                    print(f"🔒 [{self.name}] 过滤掉工具调用消息")
+            elif isinstance(content, str):
+                if 'tool_result' in content or 'generate_response()' in content:
+                    is_tool_call = True
+                    print(f"🔒 [{self.name}] 过滤掉工具错误消息")
+            
+            if not is_tool_call:
+                filtered_messages.append(message)
+        
+        # 只处理过滤后的消息
+        for message in filtered_messages:
             # 处理content可能是字符串或列表的情况
             content = message.content
             if isinstance(content, list):
@@ -1828,6 +1868,7 @@ class PlayerAgent(ReActAgent):
                     }
                     self.current_role = role_mapping.get(role, role)
                     self.player_memory.update_role(self.current_role)
+                    self._game_recorded = False  # 重置战绩记录标志
                     print(f"[{self.name}] 角色分配: {self.current_role}")
             
             # 识别游戏结束（支持中英文）
@@ -1850,6 +1891,7 @@ class PlayerAgent(ReActAgent):
                     won = True
                 
                 self.player_memory.record_game_result(won)
+                self._game_recorded = True  # 标记已记录
                 print(f"[{self.name}] 游戏结束，{'胜利' if won else '失败'}")
             
             # 更新记忆
@@ -1938,8 +1980,68 @@ class PlayerAgent(ReActAgent):
         
         for attempt in range(max_retries):
             try:
+                # 🔴 清理输入消息 - 移除工具调用以防止模型模仿
+                if 'x' in kwargs:  # x 是 ReActAgent 的输入消息参数
+                    x = kwargs['x']
+                    if isinstance(x, Msg):
+                        # 清理单个消息
+                        if isinstance(x.content, dict) and x.content.get('type') == 'tool_use':
+                            print(f"🔒 [{self.name}] 阻止工具调用消息进入模型")
+                            x.content = "[此消息已过滤]"
+                    elif isinstance(x, list):
+                        # 清理消息列表
+                        for i, item in enumerate(x):
+                            if isinstance(item, Msg) and isinstance(item.content, dict):
+                                if item.content.get('type') == 'tool_use':
+                                    print(f"🔒 [{self.name}] 阻止工具调用消息进入模型")
+                                    x[i].content = "[此消息已过滤]"
+                
+                # 🔴 关键修复：动态添加结构化输出格式提示
+                if 'structured_model' in kwargs and kwargs['structured_model'] is not None:
+                    model_class = kwargs['structured_model']
+                    
+                    # 构建字段说明
+                    format_hint = "\n\n📋 REQUIRED OUTPUT FORMAT:\n"
+                    if hasattr(model_class, 'model_fields'):
+                        for field_name, field_info in model_class.model_fields.items():
+                            field_type = "boolean" if field_info.annotation == bool else "string"
+                            required = "REQUIRED" if field_info.is_required() else "optional"
+                            desc = field_info.description or ""
+                            format_hint += f"- {field_name} ({field_type}, {required}): {desc}\n"
+                    
+                    format_hint += "\nOutput ONLY the JSON object matching this schema.\n"
+                    
+                    # 将格式提示添加到输入消息
+                    if 'x' in kwargs and isinstance(kwargs['x'], Msg):
+                        original_content = kwargs['x'].content
+                        kwargs['x'].content = f"{original_content}\n{format_hint}"
+                
                 # 调用父类方法
                 response = await super().__call__(*args, **kwargs)
+                
+                # 🔴 强制过滤工具调用 - DeepSeek经常输出tool_use格式
+                if hasattr(response, 'content'):
+                    content = response.content
+                    # 如果content是工具调用对象,提取实际文本
+                    if isinstance(content, dict):
+                        if 'type' in content and content['type'] == 'tool_use':
+                            # 从工具调用中提取文本
+                            if 'arguments' in content and isinstance(content['arguments'], dict):
+                                if 'response' in content['arguments']:
+                                    response.content = content['arguments']['response']
+                                    print(f"⚠️ [{self.name}] 过滤工具调用,提取文本: {response.content[:50]}...")
+                    # 如果content是列表,过滤掉工具调用元素
+                    elif isinstance(content, list):
+                        filtered = []
+                        for item in content:
+                            if isinstance(item, dict) and item.get('type') == 'tool_use':
+                                if 'arguments' in item and 'response' in item['arguments']:
+                                    filtered.append(item['arguments']['response'])
+                                    print(f"⚠️ [{self.name}] 从列表过滤工具调用")
+                            else:
+                                filtered.append(item)
+                        if filtered:
+                            response.content = filtered
                 
                 # 如果使用了结构化输出模型,验证响应完整性
                 if 'structured_model' in kwargs and kwargs['structured_model'] is not None:
@@ -1948,6 +2050,35 @@ class PlayerAgent(ReActAgent):
                     # 🔴 修复: 确保metadata存在
                     if response.metadata is None:
                         response.metadata = {}
+                    
+                    # 🔴 新增：从文本中提取 JSON 并填充 metadata（DeepSeek 经常输出"文本+JSON"）
+                    # 检查是否需要从文本提取（metadata为空或缺少必需字段）
+                    needs_extraction = False
+                    if hasattr(model_class, 'model_fields'):
+                        for field_name, field_info in model_class.model_fields.items():
+                            if field_info.is_required() and field_name not in response.metadata:
+                                needs_extraction = True
+                                break
+                    
+                    if needs_extraction:
+                        import json
+                        import re
+                        
+                        content_str = str(response.content)
+                        # 尝试提取 JSON 对象（支持多行）
+                        json_match = re.search(r'\{[^{}]*\}', content_str, re.DOTALL)
+                        if json_match:
+                            try:
+                                json_obj = json.loads(json_match.group())
+                                # 将提取的 JSON 填充到 metadata
+                                for key, value in json_obj.items():
+                                    if key not in response.metadata:
+                                        response.metadata[key] = value
+                                if attempt == 0:
+                                    print(f"✅ [{self.name}] 从文本提取JSON到metadata: {json_obj}")
+                            except json.JSONDecodeError as e:
+                                if attempt == 0:
+                                    print(f"⚠️ [{self.name}] JSON解析失败: {e}")
                     
                     # 🔴 修复字段名映射: LLM有时输出错误的字段名
                     field_mappings = {
@@ -1973,7 +2104,10 @@ class PlayerAgent(ReActAgent):
                                 if field_info.annotation == bool:
                                     default_value = False
                                 elif field_name == 'reach_agreement':
-                                    default_value = False  # 狼人讨论默认未达成一致
+                                    # 狼人讨论: 检测文本中是否有同意/达成一致的迹象
+                                    text = str(response.content)
+                                    agreement_keywords = ['agree', 'agreed', '同意', '一致', 'consensus', "let's go"]
+                                    default_value = any(kw in text.lower() for kw in agreement_keywords)
                                 elif field_name == 'poison':
                                     default_value = False  # 女巫默认不使用毒药
                                 elif field_name == 'resurrect':
@@ -1982,25 +2116,28 @@ class PlayerAgent(ReActAgent):
                                     default_value = False  # 猎人默认不开枪
                                 elif field_name == 'name':
                                     # name字段由LLM推理决定(查验/射杀/毒杀目标)
-                                    # 对于Seer是必填的,需要从文本提取
                                     extracted_name = self._extract_player_name_from_text(response.content)
                                     if extracted_name:
                                         default_value = extracted_name
                                         print(f"⚠️ [{self.name}] 从文本提取目标: {extracted_name}")
                                     else:
-                                        # Hunter/Witch的name可为None,但Seer必须有
-                                        # 这里统一设为None,让Pydantic验证决定是否报错
+                                        # 无法提取则设为None (对于Witch/Hunter可选,Seer必填会触发重试)
                                         default_value = None
                                 elif field_name == 'vote':
                                     # vote字段由LLM推理决定,是必填字段!
-                                    # 如果缺失,从文本中尝试提取玩家名字
                                     extracted_name = self._extract_player_name_from_text(response.content)
                                     if extracted_name:
                                         default_value = extracted_name
                                         print(f"⚠️ [{self.name}] 从文本提取投票目标: {extracted_name}")
                                     else:
-                                        # 完全无法提取,抛出错误触发重试
-                                        raise ValueError(f"LLM未输出投票目标 'vote' 字段,且无法从文本提取")
+                                        # 完全无法提取,触发重试而非直接崩溃
+                                        if attempt < max_retries - 1:
+                                            print(f"⚠️ [{self.name}] 未找到投票目标,将重试...")
+                                            raise ValueError(f"LLM未输出投票目标 'vote' 字段")
+                                        else:
+                                            # 最后一次尝试失败,随机选一个(避免游戏卡死)
+                                            print(f"❌ [{self.name}] 多次重试仍无法提取投票目标,将跳过")
+                                            default_value = None
                                 else:
                                     default_value = None
                                 

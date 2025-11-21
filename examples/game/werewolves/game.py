@@ -342,7 +342,30 @@ async def werewolves_game(agents: list[ReActAgent]) -> None:
         # The day ends
         first_day = False
 
-    # Game over, each player reflects
+    # Game over, record results for each player
+    # 确保所有玩家都记录了游戏结果
+    for player in agents:
+        if hasattr(player, 'player_memory'):
+            # 检查是否已经记录过（通过 observe 方法）
+            # 如果没记录，这里补充记录
+            if not hasattr(player, '_game_recorded') or not player._game_recorded:
+                # 判断是否获胜
+                won = False
+                if res:  # res 是获胜消息
+                    content = res.lower() if isinstance(res, str) else str(res).lower()
+                    is_werewolf_win = "werewolves win" in content or "狼人获胜" in content
+                    is_villager_win = "villagers win" in content or "村民获胜" in content
+                    
+                    if is_werewolf_win and player.current_role == "werewolf":
+                        won = True
+                    elif is_villager_win and player.current_role != "werewolf":
+                        won = True
+                
+                player.player_memory.record_game_result(won)
+                player._game_recorded = True
+                print(f"📊 [{player.name}] 记录战绩: {'胜利' if won else '失败'} (总计: {player.player_memory.total_games}局)")
+    
+    # Each player reflects
     await fanout_pipeline(
         agents=agents,
         msg=await moderator(Prompts.to_all_reflect),

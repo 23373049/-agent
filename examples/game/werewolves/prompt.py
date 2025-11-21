@@ -116,7 +116,7 @@ class EnglishPrompts:
         "Now the discussion is over. Everyone, please vote to eliminate one "
         "player from the alive players: {}.\n\n"
         "IMPORTANT: You MUST output your vote in this exact JSON format:\n"
-        '{"vote": "PlayerX"}  // PlayerX is the player you want to vote for'
+        "{{\"vote\": \"PlayerX\"}}  // PlayerX is the player you want to vote for"
     )
 
     to_all_res = "The voting result is {}. So {} has been voted out."
