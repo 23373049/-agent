@@ -7,7 +7,14 @@ class EnglishPrompts:
 
     to_dead_player = (
         "{}, you're eliminated now. Now you can make a final statement to "
-        "all alive players before you leave the game."
+        "all alive players before you leave the game.\n\n"
+        "⚠️ CRITICAL RULES FOR FINAL STATEMENT:\n"
+        "1. DO NOT reveal information that only your team knows (e.g., who your werewolf teammates are)\n"
+        "2. DO NOT expose other players' secret roles unless they were publicly confirmed\n"
+        "3. You MAY share your observations, suspicions, and reasoning\n"
+        "4. You MAY reveal YOUR OWN role (but not your teammates')\n"
+        "5. Keep your statement under 100 words\n\n"
+        "This is standard Werewolf game etiquette - protect information that should remain secret."
     )
 
     to_all_new_game = (
@@ -146,7 +153,16 @@ class EnglishPrompts:
 class ChinesePrompts:
     """Chinese prompts used to guide the werewolf game."""
 
-    to_dead_player = "{}, 你已被淘汰。现在你可以向所有存活玩家发表最后的遗言。"
+    to_dead_player = (
+        "{}, 你已被淘汰。现在你可以向所有存活玩家发表最后的遗言。\n\n"
+        "⚠️ 遗言规则（必读）：\n"
+        "1. 严禁透露只有你团队知道的信息（如你的狼人队友是谁）\n"
+        "2. 严禁暴露其他未公开玩家的真实身份\n"
+        "3. 可以分享你的观察、怀疑和推理\n"
+        "4. 可以透露你自己的身份（但不能透露队友）\n"
+        "5. 遗言控制在100字以内\n\n"
+        "这是狼人杀标准规则 - 保护应当保密的信息。"
+    )
 
     to_all_new_game = "新的一局游戏开始，参与玩家包括：{}。现在为每位玩家重新随机分配身份，并私下告知各自身份。"
 
