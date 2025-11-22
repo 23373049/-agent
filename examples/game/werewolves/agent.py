@@ -8,6 +8,14 @@ from agentscope.formatter import DashScopeMultiAgentFormatter
 from agentscope.model import DashScopeChatModel
 from agentscope.message import Msg
 
+# Debug flag to reduce high-frequency prints. Set env var `WEREWOLF_DEBUG=1` to enable.
+WEREWOLF_DEBUG = str(os.environ.get("WEREWOLF_DEBUG", "0")).lower() in ("1", "true", "yes")
+
+def dbg(msg: str) -> None:
+    """Conditional debug print controlled by `WEREWOLF_DEBUG` env var."""
+    if WEREWOLF_DEBUG:
+        print(msg)
+
 
 #############################################
 # Role Adaptation Module (Phase 1 Implementation)
@@ -879,7 +887,7 @@ class PlayerMemory:
                     self.current_game['alive_players'].remove(player)
                     if player not in self.current_game['dead_players']:
                         self.current_game['dead_players'].append(player)
-                        print(f"[记忆] {player} 已死亡，剩余: {self.current_game['alive_players']}")
+                        dbg(f"[记忆] {player} 已死亡，剩余: {self.current_game['alive_players']}")
         
         # 提取投票信息
         if "voting result" in content.lower() or "vote" in content.lower():
@@ -1064,7 +1072,7 @@ class PlayerMemory:
                     )
         
         # 记录调整
-        print(f"[学习] 策略权重已更新 {'(胜利)' if won else '(失败)'}")
+        dbg(f"[学习] 策略权重已更新 {'(胜利)' if won else '(失败)'}")
     
     def analyze_successful_patterns(self, winning_games: list):
         """分析成功模式
@@ -1483,7 +1491,7 @@ class PlayerMemory:
         self.phase_adaptation = data.get('phase_adaptation', self.phase_adaptation)
         self.strategy_adjustments = data.get('strategy_adjustments', [])
         
-        print(f"[记忆恢复] 已加载 {self.total_games} 局游戏经验")
+        dbg(f"[记忆恢复] 已加载 {self.total_games} 局游戏经验")
 
 
 class PlayerAgent(ReActAgent):
@@ -1536,11 +1544,11 @@ class PlayerAgent(ReActAgent):
                 content = msg.content
                 # 跳过工具调用消息
                 if isinstance(content, dict) and content.get('type') == 'tool_use':
-                    print(f"🔒 [{self.name}] 阻止工具调用进入记忆")
+                    dbg(f"🔒 [{self.name}] 阻止工具调用进入记忆")
                     return
                 # 跳过包含工具错误的消息
                 if isinstance(content, str) and ('tool_result' in content or 'generate_response()' in content):
-                    print(f"🔒 [{self.name}] 阻止工具错误进入记忆")
+                    dbg(f"🔒 [{self.name}] 阻止工具错误进入记忆")
                     return
             return original_add(msg)
         
@@ -1560,45 +1568,48 @@ class PlayerAgent(ReActAgent):
             )
         
         elif model_type == "dashscope":
-            # 阿里云 DashScope - 新用户有免费额度
+            # 阿里云 DashScope - 读取环境变量，不再使用硬编码后备
             from agentscope.model import DashScopeChatModel
+            api_key = os.environ.get("DASHSCOPE_API_KEY")
+            if not api_key:
+                raise RuntimeError("DASHSCOPE_API_KEY is not set. Export it in your environment or choose another WEREWOLF_MODEL.")
             return DashScopeChatModel(
-                api_key=os.environ.get("DASHSCOPE_API_KEY", "sk-ee90284984134a15b2a89a5359c845fa"),
+                api_key=api_key,
                 model_name=os.environ.get("DASHSCOPE_MODEL", "qwen-turbo"),  # qwen-turbo 有免费额度
+                client_args={"max_retries": 2},
             )
         
         elif model_type == "deepseek":
-            # DeepSeek - 价格极低，有免费试用
+            # DeepSeek - 读取环境变量，不再使用硬编码后备
             from agentscope.model import OpenAIChatModel
+            api_key = os.environ.get("DEEPSEEK_API_KEY")
+            if not api_key:
+                raise RuntimeError("DEEPSEEK_API_KEY is not set. Export it in your environment or choose another WEREWOLF_MODEL.")
             return OpenAIChatModel(
                 model_name="deepseek-chat",
-                api_key=os.environ.get("DEEPSEEK_API_KEY", "sk-0737d735d2ac4ebdae618f16d335a631"),  # 你的 API Key
+                api_key=api_key,
                 client_args={
                     "base_url": "https://api.deepseek.com/v1",
                     "max_retries": 2,  # 降低重试次数加快失败恢复
                 },
+                generate_kwargs={"max_tokens": 256, "temperature": 0.7},
             )
         
         elif model_type == "groq":
-            # Groq - 免费且极快
+            # Groq - 读取环境变量，如无则提示
             from agentscope.model import OpenAIChatModel
+            api_key = os.environ.get("GROQ_API_KEY")
+            if not api_key:
+                raise RuntimeError("GROQ_API_KEY is not set. Export it in your environment or choose another WEREWOLF_MODEL.")
             return OpenAIChatModel(
-                model_name="llama-3.3-70b-versatile",  # 或 mixtral-8x7b-32768
-                api_key=os.environ.get("GROQ_API_KEY"),
-                client_args={"base_url": "https://api.groq.com/openai/v1"},  # 使用 client_args 传递 base_url
+                model_name="llama-3.3-70b-versatile",
+                api_key=api_key,
+                client_args={"base_url": "https://api.groq.com/openai/v1", "max_retries": 2},
+                generate_kwargs={"max_tokens": 256, "temperature": 0.7},
             )
         
         else:
-            # 默认回退到 DeepSeek (你已经有 API Key)
-            from agentscope.model import OpenAIChatModel
-            return OpenAIChatModel(
-                model_name="deepseek-chat",
-                api_key="sk-0737d735d2ac4ebdae618f16d335a631",
-                client_args={
-                    "base_url": "https://api.deepseek.com/v1",
-                    "max_retries": 2,
-                },
-            )
+            raise RuntimeError(f"Unsupported WEREWOLF_MODEL '{model_type}'. Set WEREWOLF_MODEL to one of: ollama, dashscope, deepseek, groq.")
     
     def _get_formatter(self):
         """根据模型类型选择formatter"""
@@ -1661,7 +1672,7 @@ class PlayerAgent(ReActAgent):
             self.player_memory.adapt_to_game_flow(current_round, game_state)
             # 只在轮次变化时输出日志，减少重复
             if current_round != getattr(self, '_last_logged_round', -1):
-                print(f"🧠 [{self.name}] 学习模块: 游戏阶段适应 (轮次:{current_round}, 存活:{alive_count})")
+                dbg(f"🧠 [{self.name}] 学习模块: 游戏阶段适应 (轮次:{current_round}, 存活:{alive_count})")
                 self._last_logged_round = current_round
         
         # 1. 风险评估（结合学习到的风险容忍度）
@@ -1684,7 +1695,7 @@ class PlayerAgent(ReActAgent):
         if alive_count > 0 and self.player_memory.total_games >= 3:
             similar_situations = self.player_memory.retrieve_similar_situations(game_state)
             if similar_situations:
-                print(f"📚 [{self.name}] 学习模块: 检索到 {len(similar_situations)} 个相似历史情况")
+                dbg(f"📚 [{self.name}] 学习模块: 检索到 {len(similar_situations)} 个相似历史情况")
                 insights += f"## 历史经验参考\n"
                 success_count = sum(1 for s in similar_situations if s['outcome'])
                 insights += f"- 找到 {len(similar_situations)} 个相似情况\n"
@@ -1699,7 +1710,7 @@ class PlayerAgent(ReActAgent):
         if alive_count > 0 and self.player_memory.total_games >= 2:
             strategy_rec = self.player_memory.get_strategy_recommendation(game_state)
             if strategy_rec.get('reasoning'):
-                print(f"💡 [{self.name}] 学习模块: 生成策略推荐 (置信度:{strategy_rec['confidence']:.2f})")
+                dbg(f"💡 [{self.name}] 学习模块: 生成策略推荐 (置信度:{strategy_rec['confidence']:.2f})")
                 insights += f"## 策略推荐\n"
                 for reason in strategy_rec['reasoning']:
                     insights += f"- {reason}\n"
@@ -1742,7 +1753,7 @@ class PlayerAgent(ReActAgent):
         
         # 🔴 添加警告：如果存活玩家列表为空
         if not alive_players and self.player_memory.current_game.get('game_round', 0) > 0:
-            print(f"⚠️ [{self.name}] 警告: alive_players 列表为空，游戏轮次 {self.player_memory.current_game.get('game_round', 0)}")
+            dbg(f"⚠️ [{self.name}] 警告: alive_players 列表为空，游戏轮次 {self.player_memory.current_game.get('game_round', 0)}")
         
         return {
             'role': self.current_role,
@@ -1830,11 +1841,11 @@ Keep responses under 200 words.
             if isinstance(content, dict):
                 if content.get('type') == 'tool_use' or 'name' in content and content.get('name') == 'generate_response':
                     is_tool_call = True
-                    print(f"🔒 [{self.name}] 过滤掉工具调用消息")
+                    dbg(f"🔒 [{self.name}] 过滤掉工具调用消息")
             elif isinstance(content, str):
                 if 'tool_result' in content or 'generate_response()' in content:
                     is_tool_call = True
-                    print(f"🔒 [{self.name}] 过滤掉工具错误消息")
+                    dbg(f"🔒 [{self.name}] 过滤掉工具错误消息")
             
             if not is_tool_call:
                 filtered_messages.append(message)
@@ -1869,7 +1880,7 @@ Keep responses under 200 words.
                     self.current_role = role_mapping.get(role, role)
                     self.player_memory.update_role(self.current_role)
                     self._game_recorded = False  # 重置战绩记录标志
-                    print(f"[{self.name}] 角色分配: {self.current_role}")
+                    dbg(f"[{self.name}] 角色分配: {self.current_role}")
             
             # 识别游戏结束（支持中英文）
             content_lower = content.lower()
@@ -1892,7 +1903,7 @@ Keep responses under 200 words.
                 
                 self.player_memory.record_game_result(won)
                 self._game_recorded = True  # 标记已记录
-                print(f"[{self.name}] 游戏结束，{'胜利' if won else '失败'}")
+                dbg(f"[{self.name}] 游戏结束，{'胜利' if won else '失败'}")
             
             # 更新记忆
             self.player_memory.update_from_msg(message)
@@ -1909,14 +1920,14 @@ Keep responses under 200 words.
                 if "has been eliminated" in content or "died" in content:
                     # 分析是否是关键角色
                     if "seer" in content.lower() or "预言家" in content:
-                        print(f"⚡ [{self.name}] 关键事件: 预言家死亡，调整策略")
+                        dbg(f"⚡ [{self.name}] 关键事件: 预言家死亡，调整策略")
                         self.player_memory.adjust_strategy_realtime({
                             'event_type': 'key_role_died',
                             'role': 'seer',
                             'round': self.player_memory.current_game.get('game_round', 0),
                         })
                     elif "witch" in content.lower() or "女巫" in content:
-                        print(f"⚡ [{self.name}] 关键事件: 女巫死亡，调整策略")
+                        dbg(f"⚡ [{self.name}] 关键事件: 女巫死亡，调整策略")
                         self.player_memory.adjust_strategy_realtime({
                             'event_type': 'key_role_died',
                             'role': 'witch',
@@ -1926,7 +1937,7 @@ Keep responses under 200 words.
                 # 检测被质疑事件（如果消息中提到自己且有"怀疑"、"可疑"等词）
                 if self.name in content:
                     if any(word in content for word in ['怀疑', '可疑', 'suspect', 'suspicious']):
-                        print(f"⚡ [{self.name}] 关键事件: 被质疑，调整防御姿态")
+                        dbg(f"⚡ [{self.name}] 关键事件: 被质疑，调整防御姿态")
                         self.player_memory.adjust_strategy_realtime({
                             'event_type': '被质疑',
                             'round': self.player_memory.current_game.get('game_round', 0),
@@ -1963,7 +1974,7 @@ Keep responses under 200 words.
                             self.player_memory.opponent_live_tracking[player_name]['actions']
                         )
                         if opponent_strategy != self.player_memory.opponent_live_tracking[player_name]['style']:
-                            print(f"👁️ [{self.name}] 对手分析: {player_name} 策略识别为 '{opponent_strategy}'")
+                            dbg(f"👁️ [{self.name}] 对手分析: {player_name} 策略识别为 '{opponent_strategy}'")
                         self.player_memory.opponent_live_tracking[player_name]['style'] = opponent_strategy
         
         # 调用父类的observe
@@ -1986,19 +1997,22 @@ Keep responses under 200 words.
                     if isinstance(x, Msg):
                         # 清理单个消息
                         if isinstance(x.content, dict) and x.content.get('type') == 'tool_use':
-                            print(f"🔒 [{self.name}] 阻止工具调用消息进入模型")
+                            dbg(f"🔒 [{self.name}] 阻止工具调用消息进入模型")
                             x.content = "[此消息已过滤]"
                     elif isinstance(x, list):
                         # 清理消息列表
                         for i, item in enumerate(x):
                             if isinstance(item, Msg) and isinstance(item.content, dict):
                                 if item.content.get('type') == 'tool_use':
-                                    print(f"🔒 [{self.name}] 阻止工具调用消息进入模型")
+                                    dbg(f"🔒 [{self.name}] 阻止工具调用消息进入模型")
                                     x[i].content = "[此消息已过滤]"
                 
                 # 🔴 关键修复：动态添加结构化输出格式提示
-                if 'structured_model' in kwargs and kwargs['structured_model'] is not None:
-                    model_class = kwargs['structured_model']
+                # 从 kwargs 中取出 structured_model，避免传递到父类导致意外调用 handle_interrupt
+                model_class = None
+                if 'structured_model' in kwargs:
+                    model_class = kwargs.pop('structured_model')
+                if model_class is not None:
                     
                     # 构建字段说明
                     format_hint = "\n\n📋 REQUIRED OUTPUT FORMAT:\n"
@@ -2016,7 +2030,7 @@ Keep responses under 200 words.
                         original_content = kwargs['x'].content
                         kwargs['x'].content = f"{original_content}\n{format_hint}"
                 
-                # 调用父类方法
+                # 调用父类方法 (注意：structured_model 已从 kwargs 中移除)
                 response = await super().__call__(*args, **kwargs)
                 
                 # 🔴 强制过滤工具调用 - DeepSeek经常输出tool_use格式
@@ -2029,7 +2043,7 @@ Keep responses under 200 words.
                             if 'arguments' in content and isinstance(content['arguments'], dict):
                                 if 'response' in content['arguments']:
                                     response.content = content['arguments']['response']
-                                    print(f"⚠️ [{self.name}] 过滤工具调用,提取文本: {response.content[:50]}...")
+                                    dbg(f"⚠️ [{self.name}] 过滤工具调用,提取文本: {response.content[:50]}...")
                     # 如果content是列表,过滤掉工具调用元素
                     elif isinstance(content, list):
                         filtered = []
@@ -2044,8 +2058,7 @@ Keep responses under 200 words.
                             response.content = filtered
                 
                 # 如果使用了结构化输出模型,验证响应完整性
-                if 'structured_model' in kwargs and kwargs['structured_model'] is not None:
-                    model_class = kwargs['structured_model']
+                if model_class is not None:
                     
                     # 🔴 修复: 确保metadata存在
                     if response.metadata is None:

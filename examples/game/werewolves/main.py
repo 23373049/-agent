@@ -104,7 +104,7 @@ async def main() -> None:
     )
 
     # 🎮 多局游戏循环 - 让AI学习和进化
-    num_games = 5  # 设置游戏局数（可以修改为 5, 20, 50, 100 等）
+    num_games = 1  # 设置游戏局数（可以修改为 5, 20, 50, 100 等）
     
     for game_round in range(1, num_games + 1):
         print(f"\n{'='*70}")

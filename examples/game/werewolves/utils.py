@@ -122,18 +122,29 @@ class Players:
             dead_players (`list[ReActAgent]`):
                 A list of dead players to be removed.
         """
-        self.werewolves = [
-            _ for _ in self.werewolves if _.name not in dead_players
-        ]
-        self.villagers = [
-            _ for _ in self.villagers if _.name not in dead_players
-        ]
-        self.seer = [_ for _ in self.seer if _.name not in dead_players]
-        self.hunter = [_ for _ in self.hunter if _.name not in dead_players]
-        self.witch = [_ for _ in self.witch if _.name not in dead_players]
-        self.current_alive = [
-            _ for _ in self.current_alive if _.name not in dead_players
-        ]
+        # Normalize dead_players to a set of names (strings). Accept either
+        # player name strings or agent objects to be robust across call sites.
+        dead_names = set()
+        for d in dead_players or []:
+            if not d:
+                continue
+            if isinstance(d, str):
+                dead_names.add(d)
+            elif hasattr(d, 'name'):
+                dead_names.add(d.name)
+            else:
+                # Fallback: coerce to string
+                dead_names.add(str(d))
+
+        if not dead_names:
+            return
+
+        self.werewolves = [_ for _ in self.werewolves if _.name not in dead_names]
+        self.villagers = [_ for _ in self.villagers if _.name not in dead_names]
+        self.seer = [_ for _ in self.seer if _.name not in dead_names]
+        self.hunter = [_ for _ in self.hunter if _.name not in dead_names]
+        self.witch = [_ for _ in self.witch if _.name not in dead_names]
+        self.current_alive = [_ for _ in self.current_alive if _.name not in dead_names]
 
     def print_roles(self) -> None:
         """Print the roles of all players."""
@@ -153,8 +164,24 @@ class Players:
             f'and {names_to_str(self.role_to_names["witch"])} is the witch.'
         )
 
-        if len(self.werewolves) * 2 >= len(self.current_alive):
-            return Prompts.to_all_wolf_win.format(
+        # Win condition: werewolves strictly outnumber the rest of players.
+        # That is, werewolves > (alive - werewolves)  <=>  2*werewolves > alive
+        # Configurable win rule: if WOLF_WIN_ON_TIE is True, wolves win when
+        # they are equal to or greater than the number of non-wolf players.
+        # This covers typical rules where wolves reach parity and win.
+        # You can change this behavior by setting WOLF_WIN_ON_TIE to False.
+        WOLF_WIN_ON_TIE = True
+
+        if WOLF_WIN_ON_TIE:
+            if len(self.werewolves) * 2 >= len(self.current_alive):
+                return Prompts.to_all_wolf_win.format(
+                    n_alive=len(self.current_alive),
+                    n_werewolves=len(self.werewolves),
+                    true_roles=true_roles,
+                )
+        else:
+            if len(self.werewolves) * 2 > len(self.current_alive):
+                return Prompts.to_all_wolf_win.format(
                 n_alive=len(self.current_alive),
                 n_werewolves=len(self.werewolves),
                 true_roles=true_roles,
