@@ -10,8 +10,8 @@ from prompt import EnglishPrompts as Prompts
 from agentscope.message import Msg
 from agentscope.agent import ReActAgent, AgentBase
 
-MAX_GAME_ROUND = 30
-MAX_DISCUSSION_ROUND = 3
+MAX_GAME_ROUND = 15
+MAX_DISCUSSION_ROUND = 1
 
 
 def majority_vote(votes: list[str]) -> tuple:
