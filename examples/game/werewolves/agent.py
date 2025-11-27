@@ -405,24 +405,137 @@ class DecisionMaker:
             return {}
     
     def werewolf_kill_decision(self, game_state: dict) -> dict:
-        """狼人杀人决策"""
+        """狼人杀人决策 - 增强版
+        
+        优先级：预言家 > 女巫 > 猎人 > 活跃村民 > 普通村民
+        """
         alive_players = game_state.get('alive_players', [])
-        # 优先级：预言家 > 女巫 > 猎人 > 村民
+        speeches = game_state.get('speeches', [])
+        votes = game_state.get('votes', [])
+        night_count = game_state.get('night_count', 1)
+        dead_players = game_state.get('dead_players', [])
+        
         priority_targets = []
+        reasoning_parts = []
         
-        # 基于历史发言分析可能的预言家
+        # 1. 识别可能的预言家
         suspected_seer = self._identify_seer_from_speeches(game_state)
-        if suspected_seer:
+        if suspected_seer and suspected_seer in alive_players:
             priority_targets.append(suspected_seer)
+            reasoning_parts.append(f"疑似预言家: {suspected_seer}")
         
-        # 如果没有明确目标，选择活跃玩家
-        if not priority_targets and alive_players:
-            priority_targets = alive_players[:1]
+        # 2. 识别可能的女巫（第一晚有人被救说明女巫存活且用了解药）
+        suspected_witch = self._identify_witch_from_behavior(game_state)
+        if suspected_witch and suspected_witch in alive_players and suspected_witch not in priority_targets:
+            priority_targets.append(suspected_witch)
+            reasoning_parts.append(f"疑似女巫: {suspected_witch}")
+        
+        # 3. 识别可能的猎人（发言强势、逻辑清晰但不像预言家）
+        suspected_hunter = self._identify_hunter_from_behavior(game_state)
+        if suspected_hunter and suspected_hunter in alive_players and suspected_hunter not in priority_targets:
+            priority_targets.append(suspected_hunter)
+            reasoning_parts.append(f"疑似猎人: {suspected_hunter}")
+        
+        # 4. 如果没有明确目标，选择发言活跃的玩家（可能是关键角色）
+        if not priority_targets:
+            active_players = self._get_active_players(game_state)
+            for player in active_players:
+                if player in alive_players and player != self.agent_name:
+                    priority_targets.append(player)
+                    reasoning_parts.append(f"活跃玩家: {player}")
+                    break
+        
+        # 5. 兜底：随机选择一个非队友的存活玩家
+        if not priority_targets:
+            teammates = game_state.get('teammates', [])
+            for player in alive_players:
+                if player != self.agent_name and player not in teammates:
+                    priority_targets.append(player)
+                    reasoning_parts.append(f"随机目标: {player}")
+                    break
         
         return {
             'suggested_targets': priority_targets,
-            'reasoning': '优先消灭预言家或活跃玩家'
+            'reasoning': ' | '.join(reasoning_parts) if reasoning_parts else '无明确目标，随机选择'
         }
+    
+    def _identify_witch_from_behavior(self, game_state: dict) -> str:
+        """从行为中识别可能的女巫"""
+        speeches = game_state.get('speeches', [])
+        night_results = game_state.get('night_results', [])
+        
+        witch_indicators = {}
+        
+        for speech in speeches:
+            speaker = speech.get('speaker', '')
+            content = speech.get('content', '').lower()
+            
+            if speaker not in witch_indicators:
+                witch_indicators[speaker] = 0
+            
+            # 女巫特征：讨论救人/毒人、药水使用时机
+            witch_keywords = ['救', '毒', '解药', '毒药', 'save', 'poison', 'heal', 'potion']
+            for keyword in witch_keywords:
+                if keyword in content:
+                    witch_indicators[speaker] += 2
+            
+            # 提及夜晚有人被救
+            if '被救' in content or 'saved' in content or '没死' in content:
+                witch_indicators[speaker] += 1
+        
+        # 返回得分最高的玩家
+        if witch_indicators:
+            sorted_suspects = sorted(witch_indicators.items(), key=lambda x: x[1], reverse=True)
+            if sorted_suspects[0][1] >= 3:
+                return sorted_suspects[0][0]
+        
+        return ""
+    
+    def _identify_hunter_from_behavior(self, game_state: dict) -> str:
+        """从行为中识别可能的猎人"""
+        speeches = game_state.get('speeches', [])
+        
+        hunter_indicators = {}
+        
+        for speech in speeches:
+            speaker = speech.get('speaker', '')
+            content = speech.get('content', '').lower()
+            
+            if speaker not in hunter_indicators:
+                hunter_indicators[speaker] = 0
+            
+            # 猎人特征：逻辑清晰、态度坚定、暗示有能力带走某人
+            hunter_keywords = ['带走', '枪', '开枪', 'shoot', 'gun', 'take down']
+            for keyword in hunter_keywords:
+                if keyword in content:
+                    hunter_indicators[speaker] += 3
+            
+            # 态度强硬但不跳预言家身份
+            strong_keywords = ['一定是狼', '肯定是', '必须投', 'must vote', 'definitely']
+            for keyword in strong_keywords:
+                if keyword in content:
+                    hunter_indicators[speaker] += 1
+        
+        if hunter_indicators:
+            sorted_suspects = sorted(hunter_indicators.items(), key=lambda x: x[1], reverse=True)
+            if sorted_suspects[0][1] >= 3:
+                return sorted_suspects[0][0]
+        
+        return ""
+    
+    def _get_active_players(self, game_state: dict) -> list:
+        """获取发言活跃的玩家列表"""
+        speeches = game_state.get('speeches', [])
+        speech_count = {}
+        
+        for speech in speeches:
+            speaker = speech.get('speaker', '')
+            if speaker:
+                speech_count[speaker] = speech_count.get(speaker, 0) + 1
+        
+        # 按发言次数排序
+        sorted_players = sorted(speech_count.items(), key=lambda x: x[1], reverse=True)
+        return [player for player, count in sorted_players]
     
     def seer_check_decision(self, game_state: dict) -> dict:
         """预言家查验决策"""
@@ -440,38 +553,235 @@ class DecisionMaker:
         }
     
     def witch_potion_decision(self, game_state: dict) -> dict:
-        """女巫用药决策"""
+        """女巫用药决策 - 增强版"""
         killed_player = game_state.get('killed_player')
         has_heal = game_state.get('has_heal', True)
         has_poison = game_state.get('has_poison', True)
         night_count = game_state.get('night_count', 1)
+        alive_players = game_state.get('alive_players', [])
+        speeches = game_state.get('speeches', [])
         
         decision = {
             'use_heal': False,
             'use_poison': False,
             'poison_target': None,
-            'reasoning': ''
+            'reasoning': []
         }
         
-        # 第一晚倾向于救人（可能是关键角色）
-        if has_heal and killed_player and night_count <= 2:
-            decision['use_heal'] = True
-            decision['reasoning'] = '第一晚救人，可能是关键角色'
+        # === 解药决策 ===
+        if has_heal and killed_player:
+            should_heal = False
+            heal_reason = ""
+            
+            # 判断被杀者是否可能是关键角色
+            if self._is_likely_seer(killed_player, game_state):
+                should_heal = True
+                heal_reason = f"被杀者{killed_player}疑似预言家，必须救"
+            elif night_count == 1:
+                # 第一晚信息少，倾向于救人
+                should_heal = True
+                heal_reason = "第一晚信息不足，选择救人"
+            elif self._is_active_player(killed_player, game_state):
+                # 活跃玩家可能是关键角色
+                should_heal = True
+                heal_reason = f"{killed_player}发言活跃，可能是关键角色"
+            elif len(alive_players) <= 5:
+                # 人数少时谨慎使用解药
+                should_heal = False
+                heal_reason = "人数较少，保留解药"
+            
+            decision['use_heal'] = should_heal
+            if heal_reason:
+                decision['reasoning'].append(heal_reason)
         
+        # === 毒药决策 ===
+        if has_poison and not decision['use_heal']:
+            poison_target = self._find_poison_target(game_state)
+            if poison_target:
+                decision['use_poison'] = True
+                decision['poison_target'] = poison_target
+                decision['reasoning'].append(f"高置信度毒{poison_target}")
+        
+        decision['reasoning'] = ' | '.join(decision['reasoning']) if decision['reasoning'] else '保留药水'
         return decision
     
+    def _is_likely_seer(self, player: str, game_state: dict) -> bool:
+        """判断玩家是否可能是预言家"""
+        speeches = game_state.get('speeches', [])
+        for speech in speeches:
+            if speech.get('speaker') == player:
+                content = speech.get('content', '').lower()
+                seer_keywords = ['验', '查', '是狼', '是好人', 'check', 'werewolf', 'villager']
+                for keyword in seer_keywords:
+                    if keyword in content:
+                        return True
+        return False
+    
+    def _is_active_player(self, player: str, game_state: dict) -> bool:
+        """判断玩家是否活跃"""
+        speeches = game_state.get('speeches', [])
+        count = sum(1 for s in speeches if s.get('speaker') == player)
+        return count >= 2
+    
+    def _find_poison_target(self, game_state: dict) -> str:
+        """寻找毒药目标 - 增强版
+        
+        毒药是稀缺资源，需要高置信度才使用。
+        优先毒：已确认狼人 > 高度可疑玩家 > 投票行为异常者
+        """
+        speeches = game_state.get('speeches', [])
+        votes = game_state.get('votes', [])
+        alive_players = game_state.get('alive_players', [])
+        verified_wolves = game_state.get('verified_wolves', [])  # 预言家确认的狼人
+        
+        # 1. 如果有确认的狼人，直接毒
+        for wolf in verified_wolves:
+            if wolf in alive_players:
+                return wolf
+        
+        # 2. 综合分析可疑度
+        suspicion_scores = {}
+        for speech in speeches:
+            speaker = speech.get('speaker', '')
+            content = speech.get('content', '').lower()
+            if speaker not in suspicion_scores:
+                suspicion_scores[speaker] = 0
+            
+            # 狼人典型特征：踩真预言家、保狼队友
+            wolf_patterns = [
+                ('假预言家', 4), ('悍跳', 4), ('狼预言家', 4),
+                ('fake seer', 4), ('wolf seer', 4),
+                ('不是真的预言家', 3), ('他在撒谎', 2),
+            ]
+            for pattern, score in wolf_patterns:
+                if pattern in content:
+                    suspicion_scores[speaker] += score
+            
+            # 发言与投票矛盾（先说某人可疑但不投）
+            if ('可疑' in content or '是狼' in content) and speaker in [v.get('voter') for v in votes]:
+                voted_target = next((v.get('target') for v in votes if v.get('voter') == speaker), None)
+                mentioned = re.findall(r'Player\d+', content, re.IGNORECASE)
+                if mentioned and voted_target and voted_target not in mentioned:
+                    suspicion_scores[speaker] += 3  # 言行不一
+            
+            # 逻辑混乱/自相矛盾
+            if ('是狼' in content and '是好人' in content) or ('投' in content and '不投' in content):
+                suspicion_scores[speaker] += 3
+            
+            # 过度洗白某人
+            if '肯定不是狼' in content or 'definitely not wolf' in content:
+                suspicion_scores[speaker] += 2
+        
+        # 3. 分析投票行为异常
+        vote_analysis = self._analyze_vote_pattern(votes, alive_players)
+        for player, anomaly_score in vote_analysis.items():
+            if player in suspicion_scores:
+                suspicion_scores[player] += anomaly_score
+            else:
+                suspicion_scores[player] = anomaly_score
+        
+        # 返回可疑度最高且存活的玩家（阈值提高到5，确保高置信度）
+        for player, score in sorted(suspicion_scores.items(), key=lambda x: x[1], reverse=True):
+            if player in alive_players and player != self.agent_name and score >= 5:
+                return player
+        return ""
+    
+    def _analyze_vote_pattern(self, votes: list, alive_players: list) -> dict:
+        """分析投票模式异常"""
+        anomaly_scores = {}
+        
+        # 统计每个玩家的投票目标
+        vote_targets = {}
+        for vote in votes:
+            voter = vote.get('voter', '')
+            target = vote.get('target', '')
+            if voter not in vote_targets:
+                vote_targets[voter] = []
+            vote_targets[voter].append(target)
+        
+        # 检测抱团投票（多人投同一目标）
+        target_voters = {}
+        for voter, targets in vote_targets.items():
+            for target in targets:
+                if target not in target_voters:
+                    target_voters[target] = []
+                target_voters[target].append(voter)
+        
+        # 如果3人及以上投同一人，这些投票者可能是狼人抱团
+        for target, voters in target_voters.items():
+            if len(voters) >= 3:
+                for voter in voters:
+                    anomaly_scores[voter] = anomaly_scores.get(voter, 0) + 2
+        
+        return anomaly_scores
+    
     def hunter_shoot_decision(self, game_state: dict) -> dict:
-        """猎人开枪决策"""
+        """猎人开枪决策 - 增强版
+        
+        猎人开枪是关键技能，需要最大化收益：
+        1. 有确认狼人必须带走
+        2. 无确认时跟随场上主流判断
+        3. 完全无信息时才放弃开枪
+        """
         alive_players = game_state.get('alive_players', [])
         suspected_wolves = game_state.get('suspected_wolves', [])
+        verified_wolves = game_state.get('verified_wolves', [])  # 预言家确认的
+        votes = game_state.get('votes', [])
+        speeches = game_state.get('speeches', [])
         
-        # 如果有明确的狼人嫌疑，优先带走
-        target = suspected_wolves[0] if suspected_wolves else None
+        target = None
+        reasoning = ""
+        
+        # 1. 最高优先级：确认的狼人
+        for wolf in verified_wolves:
+            if wolf in alive_players:
+                target = wolf
+                reasoning = f"带走已确认的狼人{wolf}"
+                break
+        
+        # 2. 次优先级：高度怀疑的狼人
+        if not target and suspected_wolves:
+            for wolf in suspected_wolves:
+                if wolf in alive_players:
+                    target = wolf
+                    reasoning = f"带走高度怀疑的狼人{wolf}"
+                    break
+        
+        # 3. 跟随主流票：分析投票找出被多人投的玩家
+        if not target and votes:
+            vote_counts = {}
+            for vote in votes:
+                voted = vote.get('target', '')
+                if voted and voted in alive_players:
+                    vote_counts[voted] = vote_counts.get(voted, 0) + 1
+            
+            if vote_counts:
+                # 找出得票最多的玩家
+                sorted_votes = sorted(vote_counts.items(), key=lambda x: x[1], reverse=True)
+                top_voted, top_count = sorted_votes[0]
+                # 至少2票才跟随
+                if top_count >= 2:
+                    target = top_voted
+                    reasoning = f"跟随主流判断带走{top_voted}（{top_count}票）"
+        
+        # 4. 分析发言找出最可疑的人
+        if not target:
+            suspicious = self._identify_suspicious_players(speeches)
+            for player in suspicious:
+                if player in alive_players and player != self.agent_name:
+                    target = player
+                    reasoning = f"带走发言可疑的{player}"
+                    break
+        
+        # 5. 只有完全无信息时才放弃开枪
+        should_shoot = target is not None
+        if not should_shoot:
+            reasoning = "完全无法判断目标，保留不开枪"
         
         return {
-            'should_shoot': bool(target),
+            'should_shoot': should_shoot,
             'target': target,
-            'reasoning': '带走确定的狼人' if target else '不确定目标，选择不开枪'
+            'reasoning': reasoning
         }
     
     def day_phase_decision(self, game_state: dict) -> dict:
@@ -491,17 +801,57 @@ class DecisionMaker:
         }
     
     def generate_speech(self, game_state: dict) -> str:
-        """生成发言建议"""
+        """生成发言建议 - 增强版"""
         role = game_state.get('role')
         night_results = game_state.get('night_results', [])
+        speeches = game_state.get('speeches', [])
+        alive_players = game_state.get('alive_players', [])
+        dead_players = game_state.get('dead_players', [])
+        day_count = game_state.get('day_count', 1)
         
-        # 根据角色和情况给出发言建议
-        if role == 'seer' and game_state.get('should_reveal', False):
-            return "建议：公开身份并报验人结果"
+        suggestions = []
+        
+        # 根据角色生成不同的发言策略
+        if role == 'seer':
+            check_results = game_state.get('check_results', [])
+            if game_state.get('should_reveal', False) or len(check_results) >= 2:
+                suggestions.append("建议公开身份并按时间顺序报验人结果")
+                if check_results:
+                    suggestions.append(f"验人记录：{check_results}")
+            else:
+                suggestions.append("建议隐藏身份，以普通村民视角分析")
+                suggestions.append("可适度提出怀疑但不暴露验人信息来源")
+        
         elif role == 'werewolf':
-            return "建议：低调发言，适当跟随主流观点"
-        else:
-            return "建议：分析夜晚结果，提出合理怀疑"
+            suggestions.append("保持低调，跟随主流观点")
+            suggestions.append("适当分析局势但避免过度引导")
+            suggestions.append("不要急于攻击真正的预言家")
+            # 分析当前被怀疑的玩家
+            suspicious = self._identify_suspicious_players(speeches)
+            if suspicious:
+                suggestions.append(f"可考虑跟投: {suspicious[0]}")
+        
+        elif role == 'witch':
+            suggestions.append("以村民视角发言，不透露用药信息")
+            if night_results:
+                suggestions.append("可分析夜晚死亡情况但不暴露自己知道详情")
+        
+        elif role == 'hunter':
+            suggestions.append("保持中度活跃，建立可信度")
+            suggestions.append("收集信息为可能的开枪做准备")
+            suggestions.append("不要暗示自己有特殊能力")
+        
+        else:  # 村民
+            suggestions.append("积极分析发言，寻找逻辑漏洞")
+            suggestions.append("关注投票行为与发言的一致性")
+            if dead_players:
+                suggestions.append(f"可分析死者{dead_players[-1]}的死亡原因")
+        
+        # 通用建议
+        if day_count == 1:
+            suggestions.append("第一天信息少，建议谨慎发言")
+        
+        return " | ".join(suggestions)
     
     def make_vote_decision(self, game_state: dict) -> str:
         """投票决策"""
@@ -519,17 +869,131 @@ class DecisionMaker:
         return ""
     
     def _identify_seer_from_speeches(self, game_state: dict) -> str:
-        """从发言中识别可能的预言家"""
+        """从发言中识别可能的预言家 - 增强版
+        
+        预言家特征：
+        1. 声称验过某人且给出明确结果
+        2. 有验人日志或时间线
+        3. 发言中包含验人相关关键词
+        4. 对某些玩家有确定性判断
+        """
         speeches = game_state.get('speeches', [])
-        # 简化版本：返回空或第一个活跃玩家
-        # 实际可以分析发言内容
+        alive_players = game_state.get('alive_players', [])
+        
+        seer_scores = {}
+        
+        for speech in speeches:
+            speaker = speech.get('speaker', '')
+            content = speech.get('content', '').lower()
+            
+            if speaker not in seer_scores:
+                seer_scores[speaker] = 0
+            
+            # 直接跳预言家身份
+            if '我是预言家' in content or 'i am seer' in content or 'i am the seer' in content:
+                seer_scores[speaker] += 10
+            
+            # 验人相关关键词
+            seer_keywords = [
+                ('验了', 3), ('查了', 3), ('验过', 3), ('查过', 3),
+                ('是狼人', 4), ('是好人', 4), ('是村民', 3),
+                ('checked', 3), ('verified', 3),
+                ('werewolf', 2), ('villager', 2),
+                ('n1验', 5), ('n2验', 5), ('第一晚验', 5), ('第二晚验', 5),
+            ]
+            for keyword, score in seer_keywords:
+                if keyword in content:
+                    seer_scores[speaker] += score
+            
+            # 有验人日志格式
+            if re.search(r'n\d+.*验.*player\d+', content) or re.search(r'第.晚.*验', content):
+                seer_scores[speaker] += 5
+            
+            # 确定性判断（预言家通常更确定）
+            certainty_keywords = ['确定', '肯定', '一定', 'certain', 'definitely', 'sure']
+            for keyword in certainty_keywords:
+                if keyword in content:
+                    seer_scores[speaker] += 1
+        
+        # 返回得分最高的存活玩家
+        if seer_scores:
+            sorted_suspects = sorted(seer_scores.items(), key=lambda x: x[1], reverse=True)
+            for player, score in sorted_suspects:
+                if player in alive_players and score >= 5:
+                    return player
+        
         return ""
     
     def _identify_suspicious_players(self, speeches: list) -> list:
-        """识别可疑玩家"""
-        # 简化版本：基于发言次数或内容分析
-        # 这里可以添加更复杂的逻辑
-        return []
+        """识别可疑玩家（可能是狼人）- 增强版
+        
+        狼人特征：
+        1. 发言模糊、回避关键问题
+        2. 逻辑前后矛盾
+        3. 过度攻击真正有逻辑的玩家
+        4. 投票与发言不一致
+        5. 关键时刻沉默或转移话题
+        """
+        suspicion_scores = {}
+        
+        for speech in speeches:
+            speaker = speech.get('speaker', '')
+            content = speech.get('content', '').lower()
+            
+            if speaker not in suspicion_scores:
+                suspicion_scores[speaker] = 0
+            
+            # 模糊发言特征
+            vague_keywords = [
+                ('可能', 1), ('也许', 1), ('不确定', 1), ('不好说', 2),
+                ('maybe', 1), ('perhaps', 1), ('not sure', 1),
+                ('我觉得吧', 2), ('感觉', 1),
+            ]
+            for keyword, score in vague_keywords:
+                if keyword in content:
+                    suspicion_scores[speaker] += score
+            
+            # 转移话题/回避特征
+            evasion_keywords = [
+                ('先不说', 2), ('再看看', 1), ('不着急', 2),
+                ('let\'s wait', 1), ('hold on', 1),
+            ]
+            for keyword, score in evasion_keywords:
+                if keyword in content:
+                    suspicion_scores[speaker] += score
+            
+            # 过度攻击他人（可能是狼人带节奏）
+            attack_keywords = [
+                ('肯定是狼', 2), ('一定是狼', 2), ('必须投', 2),
+                ('definitely wolf', 2), ('must vote', 2),
+            ]
+            attack_count = 0
+            for keyword, score in attack_keywords:
+                if keyword in content:
+                    attack_count += 1
+                    suspicion_scores[speaker] += score
+            
+            # 过度攻击多人更可疑
+            if attack_count >= 2:
+                suspicion_scores[speaker] += 3
+            
+            # 自我辩护过多
+            defense_keywords = [
+                ('我不是狼', 2), ('相信我', 1), ('我是好人', 1),
+                ('i am not wolf', 2), ('trust me', 1), ('i am villager', 1),
+            ]
+            for keyword, score in defense_keywords:
+                if keyword in content:
+                    suspicion_scores[speaker] += score
+            
+            # 逻辑矛盾检测（简化版：同时出现对立词）
+            if ('是狼' in content and '是好人' in content) or \
+               ('投' in content and '不投' in content):
+                suspicion_scores[speaker] += 3
+        
+        # 按可疑度排序返回
+        sorted_suspects = sorted(suspicion_scores.items(), key=lambda x: x[1], reverse=True)
+        return [player for player, score in sorted_suspects if score >= 3]
 
 
 class RiskAssessment:
@@ -584,7 +1048,14 @@ class RiskAssessment:
         return 0.5
     
     def calculate_survival_probability(self, targets: list, game_state: dict) -> dict:
-        """计算不同目标的生存概率
+        """计算不同目标的生存概率 - 增强版
+        
+        综合考虑：
+        1. 是否是关键角色（容易被狼人盯上）
+        2. 发言活跃度（沉默玩家相对安全）
+        3. 投票趋势（被多人投票=危险）
+        4. 历史被杀规律（首夜常杀活跃玩家）
+        5. 女巫保护可能性
         
         Args:
             targets: 目标玩家列表
@@ -594,26 +1065,61 @@ class RiskAssessment:
             {player_name: survival_probability}
         """
         probabilities = {}
-        role = game_state.get('role')
+        votes = game_state.get('votes', [])
+        night_count = game_state.get('night_count', 1)
+        has_witch_heal = game_state.get('has_witch_heal', True)
+        
+        # 统计每个玩家被投票次数
+        vote_counts = {}
+        for vote in votes:
+            target = vote.get('target', '')
+            if target:
+                vote_counts[target] = vote_counts.get(target, 0) + 1
         
         for target in targets:
             # 基础生存概率
-            base_prob = 0.5
+            base_prob = 0.6
             
-            # 如果是关键角色，生存概率降低
+            # 因素1: 关键角色更危险
             if self._is_likely_key_role(target, game_state):
-                base_prob -= 0.2
+                base_prob -= 0.25
             
-            # 如果发言很少，生存概率提高
+            # 因素2: 沉默玩家相对安全
             if self._is_silent_player(target, game_state):
-                base_prob += 0.1
+                base_prob += 0.15
             
-            probabilities[target] = max(0.1, min(0.9, base_prob))
+            # 因素3: 被投票越多越危险
+            target_votes = vote_counts.get(target, 0)
+            if target_votes >= 3:
+                base_prob -= 0.3
+            elif target_votes >= 2:
+                base_prob -= 0.15
+            elif target_votes >= 1:
+                base_prob -= 0.05
+            
+            # 因素4: 首夜活跃玩家更危险
+            if night_count == 1:
+                speeches = game_state.get('speeches', [])
+                speech_count = sum(1 for s in speeches if s.get('speaker') == target)
+                if speech_count >= 3:
+                    base_prob -= 0.15  # 首夜话多容易被盯
+            
+            # 因素5: 女巫可能救关键角色
+            if has_witch_heal and self._is_likely_key_role(target, game_state):
+                base_prob += 0.1  # 有被救的可能
+            
+            probabilities[target] = max(0.05, min(0.95, base_prob))
         
         return probabilities
     
     def assess_win_probability(self, current_state: dict) -> float:
-        """评估当前胜利概率
+        """评估当前胜利概率 - 增强版
+        
+        综合考虑：
+        1. 人数比例
+        2. 神职存活情况（预言家/女巫/猎人）
+        3. 药水剩余情况
+        4. 信息优势
         
         Args:
             current_state: 当前游戏状态
@@ -625,25 +1131,206 @@ class RiskAssessment:
         alive_count = current_state.get('alive_count', 9)
         wolves_alive = current_state.get('wolves_alive', 3)
         
+        # 神职存活情况
+        seer_alive = current_state.get('seer_alive', True)
+        witch_alive = current_state.get('witch_alive', True)
+        hunter_alive = current_state.get('hunter_alive', True)
+        
+        # 药水情况
+        has_heal = current_state.get('has_witch_heal', True)
+        has_poison = current_state.get('has_witch_poison', True)
+        
         if role == 'werewolf':
-            # 狼人胜利概率：狼人数量 / 总存活数
-            return wolves_alive / alive_count if alive_count > 0 else 0
+            # 狼人胜利概率基础值：狼人比例
+            base_prob = wolves_alive / alive_count if alive_count > 0 else 0
+            
+            # 神职对狼人的威胁
+            if seer_alive:
+                base_prob -= 0.15  # 预言家是最大威胁
+            if witch_alive and has_poison:
+                base_prob -= 0.1   # 女巫毒药威胁
+            if hunter_alive:
+                base_prob -= 0.05  # 猎人可以换一个
+            
+            # 狼人人数优势加成
+            if wolves_alive >= alive_count / 2:
+                base_prob += 0.2  # 接近胜利
+            
+            return max(0.0, min(1.0, base_prob))
+        
         else:
-            # 好人胜利概率：与狼人数量成反比
+            # 好人胜利概率基础值
             goods_alive = alive_count - wolves_alive
-            return goods_alive / alive_count if alive_count > 0 else 0
+            base_prob = goods_alive / alive_count if alive_count > 0 else 0
+            
+            # 神职存活加成
+            if seer_alive:
+                base_prob += 0.15  # 预言家能验人
+            if witch_alive:
+                if has_heal:
+                    base_prob += 0.08  # 解药能救人
+                if has_poison:
+                    base_prob += 0.1   # 毒药能杀狼
+            if hunter_alive:
+                base_prob += 0.05  # 猎人能换狼
+            
+            # 狼人少于好人一半时优势大
+            if wolves_alive <= 1 and goods_alive >= 3:
+                base_prob += 0.15
+            
+            return max(0.0, min(1.0, base_prob))
     
     def _is_likely_key_role(self, player: str, game_state: dict) -> bool:
-        """判断是否可能是关键角色"""
+        """判断是否可能是关键角色（预言家/女巫/猎人）
+        
+        关键角色特征：
+        1. 发言质量高、逻辑清晰
+        2. 对局势有独特见解
+        3. 发言中包含角色相关关键词
+        4. 被其他玩家重点关注
+        """
         speeches = game_state.get('speeches', [])
-        # 简化：发言多且有逻辑的可能是关键角色
-        return False  # 实际需要分析发言内容
+        votes = game_state.get('votes', [])
+        
+        key_role_score = 0
+        speech_count = 0
+        
+        for speech in speeches:
+            if speech.get('speaker') == player:
+                speech_count += 1
+                content = speech.get('content', '').lower()
+                
+                # 预言家特征
+                seer_keywords = ['验', '查', 'check', 'verify', '是狼', '是好人']
+                for kw in seer_keywords:
+                    if kw in content:
+                        key_role_score += 3
+                
+                # 女巫特征
+                witch_keywords = ['救', '毒', '解药', '毒药', 'save', 'poison']
+                for kw in witch_keywords:
+                    if kw in content:
+                        key_role_score += 2
+                
+                # 猎人特征
+                hunter_keywords = ['带走', '开枪', 'shoot', 'gun']
+                for kw in hunter_keywords:
+                    if kw in content:
+                        key_role_score += 2
+                
+                # 逻辑性发言（包含分析结构）
+                logic_keywords = ['因为', '所以', '分析', '推理', 'because', 'therefore']
+                for kw in logic_keywords:
+                    if kw in content:
+                        key_role_score += 1
+        
+        # 被投票次数多说明被重点关注
+        vote_count = sum(1 for v in votes if v.get('target') == player)
+        if vote_count >= 2:
+            key_role_score += 2
+        
+        # 发言活跃度
+        if speech_count >= 3:
+            key_role_score += 1
+        
+        return key_role_score >= 5
     
     def _is_silent_player(self, player: str, game_state: dict) -> bool:
-        """判断是否是沉默玩家"""
+        """判断是否是沉默玩家
+        
+        沉默玩家特征：
+        1. 发言次数少
+        2. 发言内容短
+        3. 不主动参与讨论
+        """
         speeches = game_state.get('speeches', [])
-        # 简化实现
+        
+        speech_count = 0
+        total_length = 0
+        
+        for speech in speeches:
+            if speech.get('speaker') == player:
+                speech_count += 1
+                total_length += len(speech.get('content', ''))
+        
+        # 发言少于2次或总字数少于50认为是沉默玩家
+        if speech_count <= 1:
+            return True
+        if speech_count <= 2 and total_length < 50:
+            return True
+        
         return False
+    
+    def calculate_threat_level(self, player: str, game_state: dict) -> float:
+        """计算玩家对当前角色的威胁程度
+        
+        Args:
+            player: 目标玩家
+            game_state: 游戏状态
+            
+        Returns:
+            威胁值 (0-1)
+        """
+        role = game_state.get('role')
+        speeches = game_state.get('speeches', [])
+        
+        threat = 0.0
+        
+        # 如果是狼人，预言家/女巫是最大威胁
+        if role == 'werewolf':
+            if self._is_likely_key_role(player, game_state):
+                threat += 0.4
+            
+            # 检查该玩家是否在攻击我方
+            for speech in speeches:
+                if speech.get('speaker') == player:
+                    content = speech.get('content', '').lower()
+                    # 检查是否在怀疑自己的队友
+                    teammates = game_state.get('teammates', [])
+                    for teammate in teammates:
+                        if teammate.lower() in content and ('狼' in content or 'wolf' in content):
+                            threat += 0.3
+        
+        # 如果是好人，发言可疑的玩家是威胁
+        else:
+            speeches = game_state.get('speeches', [])
+            
+            # 分析该玩家的可疑特征
+            for speech in speeches:
+                if speech.get('speaker') == player:
+                    content = speech.get('content', '').lower()
+                    
+                    # 狼人典型发言特征
+                    wolf_indicators = [
+                        ('可能', 0.05), ('也许', 0.05), ('不确定', 0.05),
+                        ('先不说', 0.1), ('再看看', 0.08),
+                        ('肯定是狼', 0.1), ('必须投', 0.1),  # 过度带节奏
+                        ('我不是狼', 0.08), ('相信我', 0.05),  # 自我辩护
+                    ]
+                    for keyword, score in wolf_indicators:
+                        if keyword in content:
+                            threat += score
+                    
+                    # 攻击已确认好人的行为很可疑
+                    verified_goods = game_state.get('verified_goods', [])
+                    for good_player in verified_goods:
+                        if good_player.lower() in content and ('狼' in content or '投' in content):
+                            threat += 0.2
+                    
+                    # 逻辑矛盾
+                    if ('是狼' in content and '是好人' in content):
+                        threat += 0.15
+            
+            # 投票行为分析
+            votes = game_state.get('votes', [])
+            verified_goods = game_state.get('verified_goods', [])
+            for vote in votes:
+                if vote.get('voter') == player:
+                    # 投票给已确认好人很可疑
+                    if vote.get('target') in verified_goods:
+                        threat += 0.25
+        
+        return min(1.0, threat)
 
 
 class TeamCoordination:
@@ -656,57 +1343,153 @@ class TeamCoordination:
         self.trust_scores = {}  # {player_name: trust_score}
     
     def identify_teammates(self, observations: list) -> list:
-        """识别队友（主要用于狼人）
+        """识别队友（主要用于狼人）- 增强版
+        
+        从游戏消息中识别狼人队友，主要通过：
+        1. 解析 WEREWOLVES ONLY 消息
+        2. 解析夜晚狼人讨论消息
+        3. 识别消息中提到的其他狼人名字
         
         Args:
-            observations: 观察到的信息列表
+            observations: 观察到的信息列表（可以是字符串或Msg对象）
             
         Returns:
-            可能的队友列表
+            队友玩家名列表
         """
         teammates = []
         
-        # 从观察中提取队友信息
         for obs in observations:
-            if 'WEREWOLVES ONLY' in obs:
-                # 狼人频道的消息，提取其他狼人
-                # 实际需要解析消息内容
-                pass
+            # 处理不同类型的观察数据
+            if isinstance(obs, str):
+                content = obs
+            elif hasattr(obs, 'content'):
+                content = str(obs.content)
+            elif isinstance(obs, dict):
+                content = obs.get('content', '')
+            else:
+                continue
+            
+            # 识别狼人专属消息
+            if 'WEREWOLVES ONLY' in content or '[狼人频道]' in content or 'werewolves' in content.lower():
+                # 提取玩家名（格式：Player1, Player2 等）
+                player_matches = re.findall(r'Player\d+', content, re.IGNORECASE)
+                for player in player_matches:
+                    # 标准化玩家名格式
+                    player = player.capitalize()
+                    if player != self.agent_name and player not in teammates:
+                        teammates.append(player)
+                
+                # 也尝试提取中文玩家名格式（玩家1, 玩家2 等）
+                cn_matches = re.findall(r'玩家\d+', content)
+                for player in cn_matches:
+                    if player != self.agent_name and player not in teammates:
+                        teammates.append(player)
+            
+            # 识别狼人同伴的特殊标记
+            if 'your teammates' in content.lower() or '你的队友' in content:
+                player_matches = re.findall(r'Player\d+', content, re.IGNORECASE)
+                for player in player_matches:
+                    player = player.capitalize()
+                    if player != self.agent_name and player not in teammates:
+                        teammates.append(player)
+            
+            # 识别角色分配消息中的狼人同伴
+            if 'werewolf' in content.lower() and 'are' in content.lower():
+                # 例如：The werewolves are Player1, Player2, Player3
+                player_matches = re.findall(r'Player\d+', content, re.IGNORECASE)
+                for player in player_matches:
+                    player = player.capitalize()
+                    if player != self.agent_name and player not in teammates:
+                        teammates.append(player)
         
-        return teammates
+        # 更新已知队友列表
+        for teammate in teammates:
+            if teammate not in self.known_teammates:
+                self.known_teammates.append(teammate)
+        
+        return self.known_teammates
     
     def coordinate_with_team(self, teammates: list, strategy: str, game_state: dict) -> dict:
-        """与队友协调策略
+        """与队友协调策略 - 增强版
+        
+        根据不同策略类型提供详细的协调建议
         
         Args:
             teammates: 队友列表
-            strategy: 策略类型
+            strategy: 策略类型 ('night_kill', 'day_vote', 'defense', 'attack')
             game_state: 游戏状态
             
         Returns:
-            协调建议
+            协调建议字典
         """
         coordination = {
             'suggested_action': '',
             'target_priority': [],
-            'communication_strategy': ''
+            'communication_strategy': '',
+            'vote_distribution': {},
+            'risk_assessment': ''
         }
+        
+        alive_teammates = [t for t in teammates if t in game_state.get('alive_players', [])]
         
         if strategy == 'night_kill':
             # 协调夜晚击杀目标
             coordination['suggested_action'] = 'discuss_target'
             coordination['target_priority'] = self._prioritize_kill_targets(game_state)
-            coordination['communication_strategy'] = '讨论并达成一致意见'
+            coordination['communication_strategy'] = '快速达成一致，优先击杀预言家'
+            
+            # 添加击杀建议
+            if coordination['target_priority']:
+                coordination['risk_assessment'] = f"建议目标: {coordination['target_priority'][0]}"
             
         elif strategy == 'day_vote':
-            # 协调白天投票
+            # 协调白天投票 - 分散票型避免暴露
             coordination['suggested_action'] = 'coordinate_votes'
-            coordination['communication_strategy'] = '避免集体投同一人，要分散'
+            coordination['communication_strategy'] = '分散投票，避免集体暴露'
+            
+            # 计算票型分配
+            alive_players = game_state.get('alive_players', [])
+            non_teammates = [p for p in alive_players if p not in teammates and p != self.agent_name]
+            
+            if non_teammates and alive_teammates:
+                # 将票分散到不同目标
+                for i, teammate in enumerate(alive_teammates):
+                    target_idx = i % len(non_teammates)
+                    coordination['vote_distribution'][teammate] = non_teammates[target_idx]
+            
+            coordination['risk_assessment'] = '注意不要同时攻击同一个目标'
+            
+        elif strategy == 'defense':
+            # 防守策略 - 当队友被怀疑时
+            coordination['suggested_action'] = 'provide_cover'
+            coordination['communication_strategy'] = '适度为队友辩护，但不要过度'
+            coordination['risk_assessment'] = '过度防守会暴露阵营关系'
+            
+        elif strategy == 'attack':
+            # 进攻策略 - 主动引导投票
+            coordination['suggested_action'] = 'lead_vote'
+            target = self._find_attack_target(game_state)
+            if target:
+                coordination['target_priority'] = [target]
+            coordination['communication_strategy'] = '构建合理逻辑引导投票'
         
         return coordination
     
+    def _find_attack_target(self, game_state: dict) -> str:
+        """寻找适合攻击的目标"""
+        alive_players = game_state.get('alive_players', [])
+        speeches = game_state.get('speeches', [])
+        
+        # 找发言少或逻辑弱的好人作为攻击目标
+        for player in alive_players:
+            if player not in self.known_teammates and player != self.agent_name:
+                return player
+        return ""
+    
     def manage_alliances(self, temporary_allies: list, game_state: dict) -> dict:
-        """管理临时联盟
+        """管理临时联盟 - 增强版
+        
+        分析临时盟友的可信度并给出维护建议
         
         Args:
             temporary_allies: 临时盟友列表
@@ -716,56 +1499,131 @@ class TeamCoordination:
             联盟管理建议
         """
         self.temporary_allies = temporary_allies
+        speeches = game_state.get('speeches', [])
+        votes = game_state.get('votes', [])
         
         # 评估每个盟友的可信度
         for ally in temporary_allies:
             if ally not in self.trust_scores:
                 self.trust_scores[ally] = 0.5
             
-            # 根据行为调整信任度
-            # 实际需要分析历史行为
+            # 根据发言分析信任度
+            ally_speeches = [s for s in speeches if s.get('speaker') == ally]
+            for speech in ally_speeches:
+                content = speech.get('content', '').lower()
+                
+                # 如果盟友帮我说话，增加信任
+                if self.agent_name.lower() in content and ('好人' in content or 'villager' in content):
+                    self.trust_scores[ally] = min(1.0, self.trust_scores[ally] + 0.15)
+                
+                # 如果盟友攻击我，降低信任
+                if self.agent_name.lower() in content and ('狼' in content or 'wolf' in content):
+                    self.trust_scores[ally] = max(0.0, self.trust_scores[ally] - 0.2)
+            
+            # 根据投票分析信任度
+            for vote in votes:
+                if vote.get('voter') == ally:
+                    # 如果投我，大幅降低信任
+                    if vote.get('target') == self.agent_name:
+                        self.trust_scores[ally] = max(0.0, self.trust_scores[ally] - 0.3)
+                    # 如果投了我推荐的人，增加信任
+                    # (这里需要更复杂的逻辑来追踪推荐)
+        
+        # 分类盟友
+        maintain = [a for a in temporary_allies if self.trust_scores.get(a, 0) > 0.6]
+        suspicious = [a for a in temporary_allies if self.trust_scores.get(a, 0) < 0.4]
+        neutral = [a for a in temporary_allies if 0.4 <= self.trust_scores.get(a, 0) <= 0.6]
         
         return {
-            'maintain_alliances': [a for a in temporary_allies if self.trust_scores.get(a, 0) > 0.6],
-            'suspicious_allies': [a for a in temporary_allies if self.trust_scores.get(a, 0) < 0.4],
-            'strategy': 'maintain' if len(temporary_allies) > 2 else 'expand'
+            'maintain_alliances': maintain,
+            'suspicious_allies': suspicious,
+            'neutral_allies': neutral,
+            'strategy': 'maintain' if len(maintain) >= 2 else ('rebuild' if len(suspicious) > len(maintain) else 'expand'),
+            'trust_scores': {a: self.trust_scores.get(a, 0.5) for a in temporary_allies}
         }
     
     def update_trust_score(self, player: str, action: str, outcome: str):
-        """更新对某玩家的信任度
+        """更新对某玩家的信任度 - 增强版
         
         Args:
             player: 玩家名字
-            action: 该玩家的行动
-            outcome: 行动结果
+            action: 该玩家的行动类型
+            outcome: 行动结果 ('positive', 'negative', 'neutral')
         """
         if player not in self.trust_scores:
             self.trust_scores[player] = 0.5
         
-        # 根据行动和结果调整信任度
+        # 根据不同行动类型调整信任度幅度
+        action_weights = {
+            'vote_for_me': -0.3,
+            'vote_against_wolf': 0.2,
+            'defend_me': 0.25,
+            'attack_me': -0.25,
+            'share_info': 0.1,
+            'suspicious_speech': -0.15,
+            'logical_speech': 0.1,
+        }
+        
+        # 获取行动对应的权重
+        weight = action_weights.get(action, 0)
+        
+        # 根据结果调整
         if outcome == 'positive':
-            self.trust_scores[player] = min(1.0, self.trust_scores[player] + 0.1)
+            adjustment = abs(weight) if weight >= 0 else weight * 0.5
         elif outcome == 'negative':
-            self.trust_scores[player] = max(0.0, self.trust_scores[player] - 0.1)
+            adjustment = -abs(weight) if weight <= 0 else weight * 0.5
+        else:
+            adjustment = weight
+        
+        self.trust_scores[player] = max(0.0, min(1.0, self.trust_scores[player] + adjustment))
     
     def _prioritize_kill_targets(self, game_state: dict) -> list:
-        """为狼人优先排序击杀目标"""
+        """为狼人优先排序击杀目标 - 增强版
+        
+        优先级：预言家 > 女巫 > 猎人 > 活跃村民 > 沉默村民
+        """
         alive_players = game_state.get('alive_players', [])
+        speeches = game_state.get('speeches', [])
         
-        # 优先级排序
-        priority_list = []
+        # 计算每个玩家的击杀优先级得分
+        priority_scores = {}
         
-        # 1. 已知或怀疑的预言家
-        suspected_seer = game_state.get('suspected_seer')
-        if suspected_seer:
-            priority_list.append(suspected_seer)
-        
-        # 2. 其他活跃玩家
         for player in alive_players:
-            if player not in priority_list and player != self.agent_name:
-                priority_list.append(player)
+            if player == self.agent_name or player in self.known_teammates:
+                continue
+            
+            score = 0
+            player_speeches = [s for s in speeches if s.get('speaker') == player]
+            
+            for speech in player_speeches:
+                content = speech.get('content', '').lower()
+                
+                # 预言家特征 - 最高优先级
+                if '验' in content or 'check' in content or '是狼' in content:
+                    score += 10
+                if '我是预言家' in content or 'i am seer' in content:
+                    score += 15
+                
+                # 女巫特征
+                if '救' in content or '毒' in content or 'poison' in content:
+                    score += 7
+                
+                # 猎人特征
+                if '带走' in content or 'shoot' in content:
+                    score += 5
+                
+                # 逻辑清晰的玩家（威胁较大）
+                if '因为' in content or '所以' in content:
+                    score += 2
+            
+            # 发言活跃度
+            score += len(player_speeches) * 0.5
+            
+            priority_scores[player] = score
         
-        return priority_list
+        # 按优先级排序
+        sorted_targets = sorted(priority_scores.items(), key=lambda x: x[1], reverse=True)
+        return [player for player, score in sorted_targets]
 
 
 class PlayerMemory:
@@ -1576,7 +2434,6 @@ class PlayerAgent(ReActAgent):
             return DashScopeChatModel(
                 api_key=api_key,
                 model_name=os.environ.get("DASHSCOPE_MODEL", "qwen-turbo"),  # qwen-turbo 有免费额度
-                client_args={"max_retries": 2},
             )
         
         elif model_type == "deepseek":

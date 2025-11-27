@@ -171,7 +171,7 @@ class ChinesePrompts:
     to_wolves_discussion = (
         "[仅狼人可见] {}, 你们可以讨论并决定今晚要淘汰的玩家。当前存活玩家有：{}。\n\n"
         "重要: 当你们达成一致时，你必须按照以下JSON格式输出:\n"
-        '{"reach_agreement": true/false}  // true表示达成一致，false表示继续讨论'
+        '{{"reach_agreement": true/false}}  // true表示达成一致，false表示继续讨论'
     )
 
     to_wolves_vote = """[仅狼人可见] 你投票要杀死哪位玩家？

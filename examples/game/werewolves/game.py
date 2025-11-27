@@ -19,10 +19,10 @@ from structured_model import (
     get_seer_model,
     get_hunter_model,
 )
-from prompt import EnglishPrompts as Prompts
+# from prompt import EnglishPrompts as Prompts
 
-# Uncomment the following line to use Chinese prompts
-# from prompt import ChinesePrompts as Prompts
+# 使用中文提示词
+from prompt import ChinesePrompts as Prompts
 
 
 from agentscope.agent import ReActAgent
