@@ -7,7 +7,14 @@ class EnglishPrompts:
 
     to_dead_player = (
         "{}, you're eliminated now. Now you can make a final statement to "
-        "all alive players before you leave the game."
+        "all alive players before you leave the game.\n\n"
+        "⚠️ CRITICAL RULES FOR FINAL STATEMENT:\n"
+        "1. DO NOT reveal information that only your team knows (e.g., who your werewolf teammates are)\n"
+        "2. DO NOT expose other players' secret roles unless they were publicly confirmed\n"
+        "3. You MAY share your observations, suspicions, and reasoning\n"
+        "4. You MAY reveal YOUR OWN role (but not your teammates')\n"
+        "5. Keep your statement under 100 words\n\n"
+        "This is standard Werewolf game etiquette - protect information that should remain secret."
     )
 
     to_all_new_game = (
@@ -24,11 +31,16 @@ class EnglishPrompts:
     to_wolves_discussion = (
         "[WEREWOLVES ONLY] {}, you should discuss and "
         "decide on a player to eliminate tonight. Current alive players "
-        "are {}. Remember to set `reach_agreement` to True if you reach an "
-        "agreement during the discussion."
+        "are {}.\n\n"
+        "IMPORTANT: When you reach an agreement, you MUST output in this exact JSON format:\n"
+        '{{"reach_agreement": true/false}}  // true when you all agree on a target'
     )
 
-    to_wolves_vote = "[WEREWOLVES ONLY] Which player do you vote to kill?"
+    to_wolves_vote = (
+        "[WEREWOLVES ONLY] Which player do you vote to kill?\n\n"
+        "IMPORTANT: You MUST output your vote in this exact JSON format:\n"
+        '{{"vote": "PlayerX"}}  // PlayerX is the player you want to kill'
+    )
 
     to_wolves_res = (
         "[WEREWOLVES ONLY] The voting result is {}. So you have chosen to "
@@ -43,7 +55,9 @@ class EnglishPrompts:
         "is eliminated. You can resurrect him/her by using your healing "
         "potion, "
         "and note you can only use it once in the whole game. Do you want to "
-        "resurrect {dead_name}? Give me your reason and decision."
+        "resurrect {dead_name}? Give me your reason and decision.\n\n"
+        "IMPORTANT: You MUST output your decision in this exact JSON format:\n"
+        '{{"resurrect": true/false}}  // true to resurrect, false to skip'
     )
 
     to_witch_resurrect_no = (
@@ -56,7 +70,9 @@ class EnglishPrompts:
     to_witch_poison = (
         "[WITCH ONLY] {witch_name}, as a witch, you have a one-time-use "
         "poison potion, do you want to use it tonight? Give me your reason "
-        "and decision."
+        "and decision.\n\n"
+        "IMPORTANT: You MUST output your decision in this exact JSON format:\n"
+        '{{"poison": true/false, "name": "PlayerX"}}  // poison: whether to use poison, name: target player (null if not using)'
     )
 
     to_all_seer_turn = (
@@ -66,7 +82,9 @@ class EnglishPrompts:
 
     to_seer = (
         "[SEER ONLY] {}, as the seer you can check one player's identity "
-        "tonight. Who do you want to check? Give me your reason and decision."
+        "tonight.\nAlive players: {}\nWho do you want to check? Give me your reason and decision.\n\n"
+        "IMPORTANT: You MUST output your decision in this exact JSON format:\n"
+        '{{"name": "PlayerX"}}  // PlayerX is the player you want to check'
     )
 
     to_seer_result = (
@@ -76,7 +94,9 @@ class EnglishPrompts:
     to_hunter = (
         "[HUNTER ONLY] {name}, as the hunter you're eliminated tonight. You "
         "can choose one player to take down with you. Also, you can choose "
-        "not to use this ability. Give me your reason and decision."
+        "not to use this ability. Give me your reason and decision.\n\n"
+        "IMPORTANT: You MUST output your decision in this exact JSON format:\n"
+        '{{"shoot": true/false, "name": "PlayerX"}}  // shoot: whether to use ability, name: target player (null if not shooting)'
     )
 
     to_all_hunter_shoot = (
@@ -101,7 +121,9 @@ class EnglishPrompts:
 
     to_all_vote = (
         "Now the discussion is over. Everyone, please vote to eliminate one "
-        "player from the alive players: {}."
+        "player from the alive players: {}.\n\n"
+        "IMPORTANT: You MUST output your vote in this exact JSON format:\n"
+        "{{\"vote\": \"PlayerX\"}}  // PlayerX is the player you want to vote for"
     )
 
     to_all_res = "The voting result is {}. So {} has been voted out."
@@ -131,18 +153,31 @@ class EnglishPrompts:
 class ChinesePrompts:
     """Chinese prompts used to guide the werewolf game."""
 
-    to_dead_player = "{}, 你已被淘汰。现在你可以向所有存活玩家发表最后的遗言。"
+    to_dead_player = (
+        "{}, 你已被淘汰。现在你可以向所有存活玩家发表最后的遗言。\n\n"
+        "⚠️ 遗言规则（必读）：\n"
+        "1. 严禁透露只有你团队知道的信息（如你的狼人队友是谁）\n"
+        "2. 严禁暴露其他未公开玩家的真实身份\n"
+        "3. 可以分享你的观察、怀疑和推理\n"
+        "4. 可以透露你自己的身份（但不能透露队友）\n"
+        "5. 遗言控制在100字以内\n\n"
+        "这是狼人杀标准规则 - 保护应当保密的信息。"
+    )
 
     to_all_new_game = "新的一局游戏开始，参与玩家包括：{}。现在为每位玩家重新随机分配身份，并私下告知各自身份。"
 
     to_all_night = "天黑了，请所有人闭眼。狼人请睁眼，选择今晚要淘汰的一名玩家..."
 
     to_wolves_discussion = (
-        "[仅狼人可见] {}, 你们可以讨论并决定今晚要淘汰的玩家。当前存活玩家有：{}。"
-        "如果达成一致，请将 `reach_agreement` 设为 True。"
+        "[仅狼人可见] {}, 你们可以讨论并决定今晚要淘汰的玩家。当前存活玩家有：{}。\n\n"
+        "重要: 当你们达成一致时，你必须按照以下JSON格式输出:\n"
+        '{{"reach_agreement": true/false}}  // true表示达成一致，false表示继续讨论'
     )
 
-    to_wolves_vote = "[仅狼人可见] 你投票要杀死哪位玩家？"
+    to_wolves_vote = """[仅狼人可见] 你投票要杀死哪位玩家？
+
+重要: 你必须按照以下JSON格式输出投票:
+{{"vote": "PlayerX"}}  // PlayerX是你要杀死的玩家"""
 
     to_wolves_res = "[仅狼人可见] 投票结果为 {}，你们选择淘汰 {}。"
 
@@ -156,15 +191,27 @@ class ChinesePrompts:
     to_witch_resurrect_no = "[仅女巫可见] 女巫选择不救该玩家。"
     to_witch_resurrect_yes = "[仅女巫可见] 女巫选择救活该玩家。"
 
-    to_witch_poison = "[仅女巫可见] {witch_name}，你有一瓶一次性毒药，今晚要使用吗？请给出理由和决定。"
+    to_witch_poison = """[仅女巫可见] {witch_name}，你有一瓶一次性毒药，今晚要使用吗？请给出理由和决定。
+
+重要: 你必须按照以下JSON格式输出决策:
+{{"poison": true/false, "name": "PlayerX"}}  // poison表示是否使用毒药，name是目标玩家（不使用则为null）"""
 
     to_all_seer_turn = "轮到预言家行动，预言家请睁眼并查验一名玩家身份..."
 
-    to_seer = "[仅预言家可见] {}, 你是预言家，今晚可以查验一名玩家身份。你要查谁？请给出理由和决定。"
+    to_seer = """[仅预言家可见] {}, 你是预言家，今晚可以查验一名玩家身份。
+当前存活玩家: {}
+你要查谁？请给出理由和决定。
+
+重要: 你必须按照以下JSON格式输出决策（字段名必须完全一致）:
+{{"name": "PlayerX"}}  // PlayerX是你要查验的玩家名字，必须从存活玩家中选择"""
 
     to_seer_result = "[仅预言家可见] 你查验了{agent_name}，结果是：{role}。"
 
-    to_hunter = "[仅猎人可见] {name}，你是猎人，今晚被淘汰。你可以选择带走一名玩家，也可以选择不带走。请给出理由和决定。"
+    to_hunter = """[仅猎人可见] {name}，你是猎人，今晚被淘汰。你可以选择带走一名玩家，也可以选择不带走。
+请给出理由和决定。
+
+重要: 你必须按照以下JSON格式输出决策:
+{{"shoot": true/false, "name": "PlayerX"}}  // shoot表示是否开枪，name是目标玩家（不开枪则为null）"""
 
     to_all_hunter_shoot = "猎人选择带走 {} 一起出局。"
 
@@ -174,7 +221,10 @@ class ChinesePrompts:
 
     to_all_discuss = "现在存活玩家有：{names}。游戏继续，大家开始讨论并投票淘汰一名玩家。请按顺序（{names}）依次发言。"
 
-    to_all_vote = "讨论结束。请大家从存活玩家中投票淘汰一人：{}。"
+    to_all_vote = """讨论结束。请大家从存活玩家中投票淘汰一人：{}。
+
+重要: 你必须按照以下JSON格式输出投票:
+{{"vote": "PlayerX"}}  // PlayerX是你要投票淘汰的玩家名字"""
 
     to_all_res = "投票结果为 {}，{} 被淘汰。"
 
