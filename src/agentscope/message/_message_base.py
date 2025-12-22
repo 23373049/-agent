@@ -227,7 +227,8 @@ class Msg:
             blocks = self.content or []
 
         if block_type is not None:
-            blocks = [_ for _ in blocks if _["type"] == block_type]
+            # Fix: handle both dict and string elements in blocks
+            blocks = [_ for _ in blocks if isinstance(_, dict) and _["type"] == block_type]
 
         return blocks
 

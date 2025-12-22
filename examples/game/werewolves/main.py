@@ -5,7 +5,7 @@ import asyncio
 import os
 
 from game import werewolves_game
-
+from agent import PlayerAgent
 from agentscope.agent import ReActAgent
 from agentscope.formatter import DashScopeMultiAgentFormatter
 from agentscope.model import DashScopeChatModel
@@ -69,7 +69,7 @@ Your target is to win the game with your teammates as much as possible.
 - Generate a one-line response.
 - Don't repeat the others' speeches.""",
         model=DashScopeChatModel(
-            api_key=os.environ.get("DASHSCOPE_API_KEY"),
+            api_key=os.environ.get("DASHSCOPE_API_KEY","sk-f84c6773bd6b45c29316b06a54d3b245"),
             model_name="qwen3-max",
         ),
         formatter=DashScopeMultiAgentFormatter(),
@@ -89,7 +89,7 @@ async def main() -> None:
     # )
 
     # Prepare 9 players, you can change their names here
-    players = [get_official_agents(f"Player{_ + 1}") for _ in range(9)]
+    players = [PlayerAgent(f"Player{_ + 1}") for _ in range(9)]
 
     # Note: You can replace your own agents here, or use all your own agents
 

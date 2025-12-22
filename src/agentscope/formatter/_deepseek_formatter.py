@@ -208,7 +208,7 @@ class DeepSeekMultiAgentFormatter(TruncatedFormatterBase):
         accumulated_text = []
         for msg in msgs:
             for block in msg.get_content_blocks():
-                if block["type"] == "text":
+                if isinstance(block, dict) and block.get("type") == "text":
                     accumulated_text.append(f"{msg.name}: {block['text']}")
 
         if accumulated_text:
